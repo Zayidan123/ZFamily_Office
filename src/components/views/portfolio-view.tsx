@@ -5,6 +5,7 @@
 // StatCards (VaR/Posisi/Konsentrasi/Total) · Alokasi vs Target
 // Konsentrasi Risiko · Stress Test interaktif (slider + preset
 // + POST /risk/stress-test + BarChart recharts)
+// Ronde 6 (V-a): ekspor PDF Laporan Kinerja via print overlay.
 // ============================================================
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -13,6 +14,7 @@ import { motion } from "framer-motion";
 import { useAppStore } from "@/lib/store";
 import { apiFetch, apiGetBlob, ApiError } from "@/lib/api";
 import { formatPct, formatMonthLabel } from "@/lib/format";
+import PrintReportOverlay from "@/components/shared/print-report";
 import {
   StatCard,
   PageHeader,
@@ -27,6 +29,7 @@ import {
 import type {
   AssetClass,
   BenchmarkReport,
+  DashboardSummary,
   MonthlyReport,
   RiskOverview,
   Settings,
@@ -84,6 +87,7 @@ import {
   ArrowRight,
   Download,
   FileBarChart2,
+  Printer,
   TrendingUp,
   TrendingDown,
   Scale,
@@ -178,6 +182,17 @@ function ReportsPerformancePanel() {
   const isExecutor = user?.role === "executor";
 
   const [months, setMonths] = React.useState<ReportMonths>(12);
+
+  // Pratinjau cetak (V-a ronde 6) — ringkasan dashboard diambil
+  // hanya saat pratinjau dibuka (net worth + alokasi utk laporan)
+  const [printOpen, setPrintOpen] = React.useState(false);
+  const dashSummaryQuery = useQuery<DashboardSummary, ApiError>({
+    queryKey: ["dashboard", "summary"],
+    queryFn: () => apiFetch<DashboardSummary>("/dashboard/summary"),
+    enabled: printOpen,
+    staleTime: 30_000,
+    retry: false,
+  });
 
   const reportQuery = useQuery<MonthlyReport, ApiError>({
     queryKey: ["reports", "monthly", months],
@@ -390,6 +405,18 @@ function ReportsPerformancePanel() {
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-[36px]"
+              onClick={() => setPrintOpen(true)}
+              disabled={pending}
+              aria-label="Buka pratinjau laporan untuk cetak atau simpan PDF"
+            >
+              <Printer className="h-4 w-4" aria-hidden="true" />
+              Cetak / PDF
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -670,6 +697,16 @@ function ReportsPerformancePanel() {
           </div>
         )}
       </SectionCard>
+
+      {/* ================= Pratinjau cetak laporan (V-a ronde 6) ================= */}
+      <PrintReportOverlay
+        open={printOpen}
+        onOpenChange={setPrintOpen}
+        months={months}
+        report={report}
+        benchmark={benchmarkQuery.data}
+        summary={dashSummaryQuery.data}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 // ============================================================
 // Family Office — Mr.Z · Zustand global store (persist)
-// auth + activeView (navigasi SPA) + displayCurrency
+// auth + activeView (navigasi SPA) + displayCurrency + sidebar
 // ============================================================
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -19,6 +19,9 @@ interface AppState {
   // preferensi tampilan
   displayCurrency: "USD" | "IDR";
   setDisplayCurrency: (c: "USD" | "IDR") => void;
+  // sidebar desktop: mode kompak (rail ikon) — persist antar sesi
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (v: boolean) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -32,6 +35,8 @@ export const useAppStore = create<AppState>()(
       setActiveView: (activeView) => set({ activeView }),
       displayCurrency: "USD",
       setDisplayCurrency: (displayCurrency) => set({ displayCurrency }),
+      sidebarCollapsed: false,
+      setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
     }),
     {
       name: "zfo-app-store",

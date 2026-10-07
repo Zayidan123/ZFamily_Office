@@ -242,3 +242,51 @@
   max-height: calc(100dvh - 2rem);
   overflow-y: auto;
 }
+
+/* ==========================================================
+   V-a (ronde 6) — Cetak Laporan Kinerja (Print / Simpan PDF)
+   Pola visibility: saat print sembunyikan SEMUA, tampilkan
+   hanya .print-area di dalam .print-overlay. Dokumen laporan
+   selalu putih (paper) agar hasil PDF konsisten di kedua tema.
+   ========================================================== */
+@media print {
+  @page {
+    margin: 12mm 10mm;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .print-overlay,
+  .print-overlay * {
+    visibility: visible !important;
+  }
+  .print-overlay {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    backdrop-filter: none !important;
+  }
+  .print-area {
+    position: static !important;
+    max-width: none !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .print-toolbar {
+    display: none !important;
+  }
+  .print-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .print-table thead {
+    display: table-header-group;
+  }
+}

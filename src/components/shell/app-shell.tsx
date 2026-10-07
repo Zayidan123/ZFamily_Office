@@ -15,6 +15,7 @@ import { NAV_ITEMS, VIEW_TITLES, type ViewKey } from "@/lib/nav";
 import { VIEW_COMPONENTS } from "@/components/views/registry";
 import { Monogram, RoleBadge } from "@/components/shared/kit";
 import PriceTicker from "@/components/shared/price-ticker";
+import NotificationBell from "@/components/shell/notification-bell";
 import LoginView from "@/components/auth/login-view";
 import CommandPalette from "@/components/command-palette";
 import { cn } from "@/lib/utils";
@@ -32,7 +33,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Menu, LogOut, AlertOctagon, Search } from "lucide-react";
+import { Menu, LogOut, AlertOctagon, Search, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 // ------------------------------------------------------------
 // Splash (menghindari hydration mismatch saat store rehydrate)
@@ -74,16 +75,31 @@ function useServerClock(serverTime?: string) {
 }
 
 // ------------------------------------------------------------
+// Inisial user utk avatar rail kompak
+// ------------------------------------------------------------
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join("");
+}
+
+// ------------------------------------------------------------
 // Item navigasi (dipakai sidebar desktop & sheet mobile)
+// collapsed = mode rail ikon (desktop saja)
 // ------------------------------------------------------------
 function NavButton({
   item,
   active,
   onSelect,
+  collapsed = false,
 }: {
   item: (typeof NAV_ITEMS)[number];
   active: boolean;
   onSelect: () => void;
+  collapsed?: boolean;
 }) {
   const Icon = item.icon;
   return (
@@ -91,15 +107,18 @@ function NavButton({
       type="button"
       onClick={onSelect}
       aria-current={active ? "page" : undefined}
+      aria-label={collapsed ? item.label : undefined}
+      title={collapsed ? item.label : undefined}
       className={cn(
-        "flex min-h-[44px] w-full items-center gap-3 border-l-2 px-4 py-2 text-sm font-medium transition-colors rounded-r-lg",
+        "flex min-h-[44px] w-full items-center gap-3 border-l-2 text-sm font-medium transition-colors rounded-r-lg",
+        collapsed ? "justify-center border-l-2 px-0 py-2" : "px-4 py-2",
         active
           ? "border-l-emerald-500 bg-emerald-600/10 text-emerald-400"
           : "border-l-transparent text-zinc-300 hover:bg-zinc-800/60 hover:text-zinc-100",
       )}
     >
       <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-      {item.label}
+      {!collapsed && item.label}
     </button>
   );
 }
@@ -107,9 +126,13 @@ function NavButton({
 function SidebarContent({
   activeView,
   onSelect,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   activeView: ViewKey;
   onSelect: (v: ViewKey) => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const user = useAppStore((s) => s.user);
   const clearAuth = useAppStore((s) => s.clearAuth);
@@ -121,15 +144,43 @@ function SidebarContent({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Brand */}
-      <div className="flex items-center gap-3 px-4 pb-5 pt-6">
-        <Monogram size={38} />
-        <div className="min-w-0">
-          <p className="truncate font-semibold tracking-tight text-zinc-100">
-            Z Family Office
-          </p>
-          <p className="truncate text-[11px] text-zinc-500">Internal Wealth Platform</p>
-        </div>
+      {/* Brand + toggle rail (desktop) */}
+      <div
+        className={cn(
+          "flex items-center pb-5 pt-6",
+          collapsed ? "flex-col gap-3 px-2" : "gap-3 px-4",
+        )}
+      >
+        <Monogram size={collapsed ? 32 : 38} />
+        {!collapsed && (
+          <div className="min-w-0">
+            <p className="truncate font-semibold tracking-tight text-zinc-100">
+              Z Family Office
+            </p>
+            <p className="truncate text-[11px] text-zinc-500">Internal Wealth Platform</p>
+          </div>
+        )}
+        {onToggleCollapse && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? "Perlebar sidebar" : "Ciutkan sidebar jadi rail ikon"}
+            aria-pressed={collapsed}
+            title={collapsed ? "Perlebar sidebar" : "Ciutkan sidebar"}
+            className={cn(
+              "h-8 w-8 shrink-0 text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-200",
+              collapsed ? "" : "ml-auto",
+            )}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+            )}
+          </Button>
+        )}
       </div>
 
       {/* Nav */}
@@ -143,17 +194,27 @@ function SidebarContent({
             item={item}
             active={activeView === item.key}
             onSelect={() => onSelect(item.key)}
+            collapsed={collapsed}
           />
         ))}
       </nav>
 
       {/* User + logout */}
-      <div className="border-t border-white/10 p-4">
-        {user && (
+      <div className={cn("border-t border-white/10", collapsed ? "p-2" : "p-4")}>
+        {user && !collapsed && (
           <div className="mb-3 space-y-1.5">
             <p className="truncate text-sm font-medium text-zinc-200">{user.name}</p>
             <p className="truncate text-[11px] text-zinc-500">{user.email}</p>
             <RoleBadge role={user.role} />
+          </div>
+        )}
+        {user && collapsed && (
+          <div
+            className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600/20 text-xs font-bold text-emerald-400"
+            title={`${user.name} (${user.email})`}
+            aria-label={`Pengguna: ${user.name}`}
+          >
+            {initials(user.name)}
           </div>
         )}
         <Button
@@ -161,10 +222,14 @@ function SidebarContent({
           variant="ghost"
           size="sm"
           onClick={handleLogout}
-          className="min-h-[44px] w-full justify-start text-zinc-400 hover:bg-rose-500/10 hover:text-rose-400"
+          title="Keluar dari platform"
+          className={cn(
+            "min-h-[44px] text-zinc-400 hover:bg-rose-500/10 hover:text-rose-400",
+            collapsed ? "w-full justify-center px-0" : "w-full justify-start",
+          )}
         >
           <LogOut className="h-4 w-4" aria-hidden="true" />
-          Keluar
+          {!collapsed && "Keluar"}
         </Button>
       </div>
     </div>
@@ -181,6 +246,8 @@ export default function AppShell() {
   const setActiveView = useAppStore((s) => s.setActiveView);
   const displayCurrency = useAppStore((s) => s.displayCurrency);
   const setDisplayCurrency = useAppStore((s) => s.setDisplayCurrency);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
 
   const [mounted, setMounted] = React.useState(false);
   const [mobileOpen, setMobileOpen] = React.useState(false);
@@ -213,10 +280,18 @@ export default function AppShell() {
       <div className="flex flex-1">
         {/* ============ Sidebar desktop ============ */}
         <aside
-          className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-zinc-950 lg:flex"
+          className={cn(
+            "sticky top-0 hidden h-screen shrink-0 flex-col bg-zinc-950 transition-[width] duration-200 ease-in-out lg:flex",
+            sidebarCollapsed ? "w-[68px]" : "w-64",
+          )}
           aria-label="Sidebar navigasi"
         >
-          <SidebarContent activeView={activeView} onSelect={goTo} />
+          <SidebarContent
+            activeView={activeView}
+            onSelect={goTo}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          />
         </aside>
 
         {/* ============ Sheet mobile ============ */}
@@ -268,6 +343,9 @@ export default function AppShell() {
             </div>
 
             <div className="ml-auto flex items-center gap-2 sm:gap-3">
+              {/* Lonceng notifikasi (polling unread 30 dtk) */}
+              <NotificationBell />
+
               {/* Command palette (Cmd+K) */}
               <Button
                 type="button"
