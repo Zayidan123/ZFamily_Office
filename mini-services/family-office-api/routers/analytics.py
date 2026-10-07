@@ -1,10 +1,14 @@
 """Analytics: cost basis FIFO per aset + laporan kinerja bulanan (Task U-a).
 
-FITUR 1 — Cost basis FIFO:
-  GET /assets/{id}/pnl
+FITUR 1 — Cost basis FIFO/LIFO/Average:
+  GET /assets/{id}/pnl?method=fifo|lifo|average   (default fifo, 400 utk selain itu)
   - Lot dibuat dari transaksi type buy/transfer_in (qty, priceUsd).
-  - sell/transfer_out mengonsumsi lot TERLAMA (FIFO); realized pnl =
-    (sellPrice - lotCost) * qty dikonsumsi, dijumlahkan.
+  - fifo   : sell/transfer_out mengonsumsi lot TERLAMA.
+  - lifo   : sell/transfer_out mengonsumsi lot TERBARU.
+  - average: rata-rata bergerak (moving average) — buy menaikkan avg,
+             sell merealisasikan (price - avg) * qty; tanpa lot rincian
+             (lots = []), cost basis = avg * sisa qty.
+  - realized pnl = (sellPrice - lotCost/avg) * qty dikonsumsi, dijumlahkan.
   - income/expense/valuation_update diabaikan (bukan pergerakan lot).
   - Konversi USD memakai kolom price_usd yang SUDAH tersimpan di tabel
     transactions (dihitung saat insert oleh assets_tx.py: harga currency aset
@@ -108,19 +112,24 @@ def _clamp_months(months: int) -> int:
     return max(MONTHS_MIN, min(MONTHS_MAX, int(months)))
 
 
-# ---------------------------------------------------------------- FIFO PnL
+# ---------------------------------------------------------------- FIFO / LIFO / Average PnL
 
-def _fifo_lots(conn, asset_id: int) -> tuple:
-    """Engine FIFO. Return (realizedPnlUsd, sisa_lot_oldest_first).
-
-    Lot = {at, type, qty (qty awal), priceUsd, remainingQty}.
-    """
-    rows = query(
+def _load_tx_rows(conn, asset_id: int) -> list:
+    """Baris transaksi terurut kronologis (at ASC, id ASC) utk engine cost basis."""
+    return query(
         conn,
         "SELECT type, quantity, price_usd, at FROM transactions "
         "WHERE asset_id = ? ORDER BY at ASC, id ASC",
         (asset_id,),
     )
+
+
+def _lot_rows(rows: list, consume_from_end: bool) -> tuple:
+    """Engine lot FIFO (consume_from_end=False) / LIFO (True).
+
+    Return (realizedPnlUsd, sisa_lot_oldest_first).
+    Lot = {at, type, qty (qty awal), priceUsd, remainingQty}.
+    """
     lots: list = []
     realized = 0.0
     for r in rows:
@@ -131,7 +140,9 @@ def _fifo_lots(conn, asset_id: int) -> tuple:
                          "priceUsd": price_usd, "remainingQty": qty})
         elif r["type"] in ("sell", "transfer_out"):
             need = qty
-            for lot in lots:
+            # FIFO konsumsi lot terlama; LIFO konsumsi lot terbaru (iterasi dari belakang).
+            order = reversed(lots) if consume_from_end else lots
+            for lot in order:
                 if need <= _QTY_EPS:
                     break
                 if lot["remainingQty"] <= _QTY_EPS:
@@ -146,26 +157,87 @@ def _fifo_lots(conn, asset_id: int) -> tuple:
     return realized, remaining
 
 
+def _fifo_lots(conn, asset_id: int) -> tuple:
+    """Engine FIFO (kompatibilitas nama lama — dipakai _lot_rows)."""
+    return _lot_rows(_load_tx_rows(conn, asset_id), consume_from_end=False)
+
+
+def _average_cost(conn, asset_id: int) -> tuple:
+    """Engine moving average. Return (realizedPnlUsd, heldQty, avgCostUsd|None, hasHistory).
+
+    Buy/transfer_in menaikkan rata-rata bergerak; sell/transfer_out merealisasikan
+    (price - avg) * qty dan menurunkan held. Harga sell melebihi held dibatasi ke
+    held (tanpa posisi short, konsisten dgn engine lot).
+    """
+    avg_cost = 0.0
+    held = 0.0
+    realized = 0.0
+    has_history = False
+    for r in _load_tx_rows(conn, asset_id):
+        qty = float(r["quantity"] or 0.0)
+        price_usd = float(r["price_usd"] or 0.0)
+        if r["type"] in ("buy", "transfer_in"):
+            has_history = True
+            total_cost = avg_cost * held + price_usd * qty
+            held += qty
+            avg_cost = total_cost / held if held > _QTY_EPS else 0.0
+        elif r["type"] in ("sell", "transfer_out"):
+            take = min(qty, held)
+            if take > _QTY_EPS:
+                realized += (price_usd - avg_cost) * take
+                held -= take
+                if held <= _QTY_EPS:
+                    held = 0.0
+                    avg_cost = 0.0
+    return realized, held, (avg_cost if held > _QTY_EPS else None), has_history
+
+
+COST_METHODS = ("fifo", "lifo", "average")
+
+
 @router.get("/assets/{asset_id}/pnl")
-def asset_pnl(asset_id: int, user: dict = Depends(require_auth(*READ_ROLES))):
+def asset_pnl(
+    asset_id: int,
+    method: str = Query("fifo", description="fifo | lifo | average"),
+    user: dict = Depends(require_auth(*READ_ROLES)),
+):
     conn = get_conn()
     try:
         asset = query_one(conn, "SELECT * FROM assets WHERE id = ?", (asset_id,))
         if not asset:
             raise ApiError(404, "Aset tidak ditemukan")
 
-        realized, lots = _fifo_lots(conn, asset_id)
-        cost_raw = sum(l["remainingQty"] * l["priceUsd"] for l in lots)
-        remaining_qty = sum(l["remainingQty"] for l in lots)
+        method_n = (method or "fifo").strip().lower()
+        if method_n not in COST_METHODS:
+            raise ApiError(400, "Metode cost basis tidak valid — gunakan fifo, lifo, atau average")
 
-        if lots:
-            avg_raw = cost_raw / remaining_qty if remaining_qty > _QTY_EPS else None
+        avg_from_lot = None
+        if method_n == "average":
+            realized, remaining_qty, avg_from_lot, has_history = _average_cost(conn, asset_id)
+            if not has_history:
+                # Aset tanpa transaksi lot sama sekali (keputusan desain sama dgn lot engine):
+                # tampilkan quantity aset sekarang, tanpa dasar biaya.
+                remaining_qty = float(asset["quantity"] or 0.0)
+                cost_raw = 0.0
+                avg_raw = None
+            else:
+                avg_raw = avg_from_lot
+                cost_raw = (avg_raw * remaining_qty) if avg_raw is not None else 0.0
+            lots = []   # rata-rata bergerak tidak memakai lot
         else:
-            # Aset tanpa transaksi lot sama sekali (keputusan desain):
-            # tampilkan quantity aset sekarang, tanpa dasar biaya.
-            remaining_qty = float(asset["quantity"] or 0.0)
-            cost_raw = 0.0
-            avg_raw = None
+            realized, lots = _lot_rows(_load_tx_rows(conn, asset_id),
+                                       consume_from_end=(method_n == "lifo"))
+            cost_raw = sum(l["remainingQty"] * l["priceUsd"] for l in lots)
+            remaining_qty = sum(l["remainingQty"] for l in lots)
+
+            if lots:
+                avg_raw = cost_raw / remaining_qty if remaining_qty > _QTY_EPS else None
+            else:
+                # Aset tanpa transaksi lot sama sekali (keputusan desain):
+                # tampilkan quantity aset sekarang, tanpa dasar biaya.
+                remaining_qty = float(asset["quantity"] or 0.0)
+                cost_raw = 0.0
+                avg_raw = None
 
         unreal = pct = None
         if avg_raw is not None:
@@ -178,6 +250,7 @@ def asset_pnl(asset_id: int, user: dict = Depends(require_auth(*READ_ROLES))):
             "assetName": asset["name"],
             "symbol": asset["symbol"],
             "currency": (asset["currency"] or "USD").upper(),
+            "method": method_n,
             "realizedPnlUsd": r2(realized),
             "avgCostUsd": r2(avg_raw) if avg_raw is not None else None,
             "remainingQty": round(remaining_qty, 8),

@@ -1,0 +1,1070 @@
+     1→"use client";
+     2→
+     3→// ============================================================
+     4→// Pengaturan — Preferensi · Target Alokasi · Keamanan & Darurat
+     5→// (Panic Mode) · Data & Portabilitas · Roadmap Platform (PRD).
+     6→// RBAC: PUT settings / panic / export = owner.
+     7→// ============================================================
+     8→import * as React from "react";
+     9→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    10→import { toast } from "sonner";
+    11→import { useTheme } from "next-themes";
+    12→import { useAppStore } from "@/lib/store";
+    13→import { apiFetch, ApiError } from "@/lib/api";
+    14→import {
+    15→  PageHeader,
+    16→  SectionCard,
+    17→  ErrorBox,
+    18→  LoadingRows,
+    19→  ConfirmButton,
+    20→} from "@/components/shared/kit";
+    21→import type { AllocationTarget, Settings } from "@/lib/types";
+    22→import { cn } from "@/lib/utils";
+    23→import { Button } from "@/components/ui/button";
+    24→import { Badge } from "@/components/ui/badge";
+    25→import { Card } from "@/components/ui/card";
+    26→import { Input } from "@/components/ui/input";
+    27→import { Label } from "@/components/ui/label";
+    28→import {
+    29→  Dialog,
+    30→  DialogContent,
+    31→  DialogDescription,
+    32→  DialogFooter,
+    33→  DialogHeader,
+    34→  DialogTitle,
+    35→} from "@/components/ui/dialog";
+    36→import {
+    37→  Select,
+    38→  SelectContent,
+    39→  SelectItem,
+    40→  SelectTrigger,
+    41→  SelectValue,
+    42→} from "@/components/ui/select";
+    43→import { Slider } from "@/components/ui/slider";
+    44→import { Switch } from "@/components/ui/switch";
+    45→import {
+    46→  Accordion,
+    47→  AccordionContent,
+    48→  AccordionItem,
+    49→  AccordionTrigger,
+    50→} from "@/components/ui/accordion";
+    51→import {
+    52→  AlertTriangle,
+    53→  Check,
+    54→  Copy,
+    55→  DatabaseBackup,
+    56→  Download,
+    57→  Info,
+    58→  Loader2,
+    59→  Monitor,
+    60→  Moon,
+    61→  Palette,
+    62→  PieChart,
+    63→  ShieldCheck,
+    64→  Siren,
+    65→  Smartphone,
+    66→  Sun,
+    67→} from "lucide-react";
+    68→
+    69→type SettingsData = Settings & { panicMode?: boolean };
+    70→
+    71→function errMsg(err: unknown): string {
+    72→  return err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi";
+    73→}
+    74→
+    75→const ALLOC_KEYS: { key: keyof AllocationTarget; label: string }[] = [
+    76→  { key: "crypto", label: "Kripto" },
+    77→  { key: "stocks", label: "Saham" },
+    78→  { key: "forexGold", label: "Forex / Emas" },
+    79→  { key: "property", label: "Properti" },
+    80→  { key: "cash", label: "Kas" },
+    81→];
+    82→
+    83→const DEFAULT_TARGETS: AllocationTarget = {
+    84→  crypto: 10,
+    85→  stocks: 40,
+    86→  forexGold: 15,
+    87→  property: 20,
+    88→  cash: 15,
+    89→};
+    90→
+    91→function numOr(v: unknown, fallback: number): number {
+    92→  const n = Number(v);
+    93→  return Number.isFinite(n) ? n : fallback;
+    94→}
+    95→
+    96→/** Pola focus-visible konsisten (polish S-b) */
+    97→const focusRing =
+    98→  "focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2";
+    99→
+   100→interface MfaStatus {
+   101→  enabled: boolean;
+   102→  hasSecret: boolean;
+   103→}
+   104→
+   105→interface MfaSetup {
+   106→  secret: string;
+   107→  otpauthUrl: string;
+   108→}
+   109→
+   110→// ------------------------------------------------------------
+   111→// Roadmap PRD — 8 modul, status Live vs Roadmap (MVP cakupan)
+   112→// ------------------------------------------------------------
+   113→const ROADMAP: { code: string; name: string; features: { label: string; live: boolean }[] }[] = [
+   114→  {
+   115→    code: "A",
+   116→    name: "Wealth Aggregation",
+   117→    features: [
+   118→      { label: "Dashboard net worth real-time", live: true },
+   119→      { label: "Input aset manual + kelas aset", live: true },
+   120→      { label: "Rekaman wallet / exchange / fisik", live: true },
+   121→      { label: "Price table pasar + kurs USD/IDR", live: true },
+   122→      { label: "Histori nilai portofolio (snapshot)", live: true },
+   123→      { label: "Sinkronisasi API exchange otomatis", live: false },
+   124→      { label: "Import CSV / broker statement", live: false },
+   125→      { label: "Agregasi rekening bank & indexer on-chain", live: false },
+   126→    ],
+   127→  },
+   128→  {
+   129→    code: "B",
+   130→    name: "Portfolio & Risk",
+   131→    features: [
+   132→      { label: "Alokasi per kelas aset", live: true },
+   133→      { label: "Target alokasi & indikator drift", live: true },
+   134→      { label: "Analisis konsentrasi posisi", live: true },
+   135→      { label: "VaR 95% portofolio", live: true },
+   136→      { label: "Stress test skenario kustom", live: true },
+   137→      { label: "Matriks korelasi antar aset", live: false },
+   138→      { label: "Rekomendasi rebalancing otomatis", live: false },
+   139→      { label: "Atribusi kinerja risk-adjusted", live: false },
+   140→    ],
+   141→  },
+   142→  {
+   143→    code: "C",
+   144→    name: "Trading Bridge",
+   145→    features: [
+   146→      { label: "Log strategi multi-platform", live: true },
+   147→      { label: "Riwayat trade & PnL", live: true },
+   148→      { label: "Kinerja & win rate per strategi", live: true },
+   149→      { label: "Alert trading terpusat", live: true },
+   150→      { label: "Eksekusi order otomatis via exchange API", live: false },
+   151→      { label: "Paper trading sandbox", live: false },
+   152→      { label: "Copy-trading antar strategi", live: false },
+   153→      { label: "Position sizing & auto risk limit", live: false },
+   154→    ],
+   155→  },
+   156→  {
+   157→    code: "D",
+   158→    name: "Governance",
+   159→    features: [
+   160→      { label: "Multi-entitas (personal/holding/family)", live: true },
+   161→      { label: "Manajemen pengguna & RBAC 4 peran", live: true },
+   162→      { label: "Approval workflow (pending→decided)", live: true },
+   163→      { label: "Audit log append-only", live: true },
+   164→      { label: "Notulen rapat & keputusan keluarga", live: false },
+   165→      { label: "Voting keputusan keluarga", live: false },
+   166→      { label: "Policy engine granular per entitas", live: false },
+   167→      { label: "Laporan kepatuhan tahunan", live: false },
+   168→    ],
+   169→  },
+   170→  {
+   171→    code: "E",
+   172→    name: "Security",
+   173→    features: [
+   174→      { label: "Panic mode kill-switch", live: true },
+   175→      { label: "RBAC enforced di backend", live: true },
+   176→      { label: "Audit trail login & mutasi", live: true },
+   177→      { label: "Simulasi 2FA", live: true },
+   178→      { label: "MFA TOTP (authenticator app)", live: true },
+   179→      { label: "Enkripsi at-rest penuh + HSM", live: false },
+   180→      { label: "Device pairing & SSO", live: false },
+   181→      { label: "Audit keamanan eksternal (SOC2-style)", live: false },
+   182→    ],
+   183→  },
+   184→  {
+   185→    code: "F",
+   186→    name: "Tax & Compliance",
+   187→    features: [
+   188→      { label: "Rekap transaksi & PnL tercatat", live: true },
+   189→      { label: "Ekspor data penuh (portabilitas)", live: true },
+   190→      { label: "Kalkulasi pajak kripto multi-yurisdiksi", live: false },
+   191→      { label: "Cost-basis engine FIFO/LIFO", live: false },
+   192→      { label: "Tracking regulasi lintas negara", live: false },
+   193→      { label: "Laporan FATCA/CRS helper", live: false },
+   194→      { label: "Integrasi e-filing DJP", live: false },
+   195→    ],
+   196→  },
+   197→  {
+   198→    code: "G",
+   199→    name: "Research Vault",
+   200→    features: [
+   201→      { label: "Catatan riset thesis/target/exit", live: true },
+   202→      { label: "Tag, status & pencarian riset", live: true },
+   203→      { label: "Tautan riset ↔ aset portofolio", live: true },
+   204→      { label: "Arsip berita pasar per aset", live: false },
+   205→      { label: "Reminder review thesis berkala", live: false },
+   206→      { label: "Backtesting thesis vs histori harga", live: false },
+   207→      { label: "Integrasi data fundamental & screener", live: false },
+   208→    ],
+   209→  },
+   210→  {
+   211→    code: "H",
+   212→    name: "Generational",
+   213→    features: [
+   214→      { label: "Aturan suksesi per beneficiary", live: true },
+   215→      { label: "Instruksi darurat tersegel", live: true },
+   216→      { label: "Goals keuangan + progres", live: true },
+   217→      { label: "Proyeksi compound growth", live: true },
+   218→      { label: "Time capsule (pesan masa depan)", live: true },
+   219→      { label: "Modul edukasi ahli waris", live: false },
+   220→      { label: "Digital legacy vault kredensial", live: false },
+   221→      { label: "Struktur yayasan & philanthropy", live: false },
+   222→      { label: "Simulasi pajak warisan", live: false },
+   223→    ],
+   224→  },
+   225→];
+   226→
+   227→function LiveBadge({ live }: { live: boolean }) {
+   228→  return live ? (
+   229→    <Badge
+   230→      variant="outline"
+   231→      className="shrink-0 border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-400"
+   232→    >
+   233→      Live
+   234→    </Badge>
+   235→  ) : (
+   236→    <Badge
+   237→      variant="outline"
+   238→      className="shrink-0 border-zinc-500/40 bg-zinc-500/10 px-1.5 py-0 text-[10px] text-zinc-600 dark:text-zinc-300"
+   239→    >
+   240→      Roadmap
+   241→    </Badge>
+   242→  );
+   243→}
+   244→
+   245→// ============================================================
+   246→// SettingsView
+   247→// ============================================================
+   248→export default function SettingsView() {
+   249→  const qc = useQueryClient();
+   250→  const user = useAppStore((s) => s.user);
+   251→  const displayCurrency = useAppStore((s) => s.displayCurrency);
+   252→  const setDisplayCurrency = useAppStore((s) => s.setDisplayCurrency);
+   253→  const { theme, setTheme } = useTheme();
+   254→  const isOwner = user?.role === "owner";
+   255→
+   256→  // ---------- Query settings ----------
+   257→  const settingsQ = useQuery<SettingsData, ApiError>({
+   258→    queryKey: ["settings"],
+   259→    queryFn: () => apiFetch("/settings"),
+   260→  });
+   261→
+   262→  const putM = useMutation({
+   263→    mutationFn: (body: Record<string, unknown>) =>
+   264→      apiFetch("/settings", { method: "PUT", body }),
+   265→    onSuccess: () => {
+   266→      toast.success("Pengaturan disimpan");
+   267→      void qc.invalidateQueries({ queryKey: ["settings"] });
+   268→      void qc.invalidateQueries({ queryKey: ["risk"] });
+   269→    },
+   270→    onError: (e) => toast.error("Gagal menyimpan pengaturan", { description: errMsg(e) }),
+   271→  });
+   272→
+   273→  // ---------- Status sistem (panic mode) ----------
+   274→  const statusQ = useQuery({
+   275→    queryKey: ["system-status"],
+   276→    queryFn: () => apiFetch<{ panicMode: boolean; version: string; serverTime: string }>("/system/status"),
+   277→    refetchInterval: 15_000,
+   278→    staleTime: 10_000,
+   279→  });
+   280→  const panicOn = statusQ.data?.panicMode === true;
+   281→
+   282→  const panicM = useMutation({
+   283→    mutationFn: (enabled: boolean) =>
+   284→      apiFetch("/system/panic", { method: "POST", body: { enabled } }),
+   285→    onSuccess: (_d, enabled) => {
+   286→      toast.success(enabled ? "PANIC MODE AKTIF" : "Panic mode dimatikan", {
+   287→        description: enabled
+   288→          ? "Semua operasi tulis backend diblokir (HTTP 423)."
+   289→          : "Sistem kembali normal.",
+   290→      });
+   291→      setPanicOpen(false);
+   292→      setPanicText("");
+   293→      void qc.invalidateQueries({ queryKey: ["system-status"] });
+   294→    },
+   295→    onError: (e) => toast.error("Gagal mengubah panic mode", { description: errMsg(e) }),
+   296→  });
+   297→
+   298→  const [panicOpen, setPanicOpen] = React.useState(false);
+   299→  const [panicText, setPanicText] = React.useState("");
+   300→
+   301→  // ---------- Target alokasi ----------
+   302→  const [targets, setTargets] = React.useState<AllocationTarget>(DEFAULT_TARGETS);
+   303→  const [dirty, setDirty] = React.useState(false);
+   304→
+   305→  React.useEffect(() => {
+   306→    const at = settingsQ.data?.allocationTargets;
+   307→    if (at && !dirty) {
+   308→      setTargets({
+   309→        crypto: numOr(at.crypto, DEFAULT_TARGETS.crypto),
+   310→        stocks: numOr(at.stocks, DEFAULT_TARGETS.stocks),
+   311→        forexGold: numOr(at.forexGold, DEFAULT_TARGETS.forexGold),
+   312→        property: numOr(at.property, DEFAULT_TARGETS.property),
+   313→        cash: numOr(at.cash, DEFAULT_TARGETS.cash),
+   314→      });
+   315→    }
+   316→  }, [settingsQ.data, dirty]);
+   317→
+   318→  const total =
+   319→    targets.crypto + targets.stocks + targets.forexGold + targets.property + targets.cash;
+   320→  const totalOk = Math.round(total) === 100;
+   321→
+   322→  const saveTargets = () => {
+   323→    putM.mutate({ allocationTargets: targets });
+   324→    setDirty(false);
+   325→  };
+   326→
+   327→  // ---------- Ekspor data ----------
+   328→  const exportM = useMutation({
+   329→    mutationFn: async () => {
+   330→      const data = await apiFetch<unknown>("/admin/export");
+   331→      const now = new Date();
+   332→      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+   333→        now.getDate(),
+   334→      ).padStart(2, "0")}`;
+   335→      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+   336→      const url = URL.createObjectURL(blob);
+   337→      const a = document.createElement("a");
+   338→      a.href = url;
+   339→      a.download = `family-office-export-${stamp}.json`;
+   340→      document.body.appendChild(a);
+   341→      a.click();
+   342→      a.remove();
+   343→      URL.revokeObjectURL(url);
+   344→      return blob.size;
+   345→    },
+   346→    onSuccess: (size) =>
+   347→      toast.success("Ekspor berhasil diunduh", {
+   348→        description: `family-office-export-*.json · ${(size / 1024).toFixed(1)} KB`,
+   349→      }),
+   350→    onError: (e) => toast.error("Gagal mengekspor data", { description: errMsg(e) }),
+   351→  });
+   352→
+   353→  // ---------- MFA — Autentikasi Dua Faktor (Task S-b) ----------
+   354→  const mfaStatusQ = useQuery<MfaStatus, ApiError>({
+   355→    queryKey: ["auth", "mfa", "status"],
+   356→    queryFn: () => apiFetch<MfaStatus>("/auth/mfa/status"),
+   357→    staleTime: 30_000,
+   358→  });
+   359→  const mfaEnabled = mfaStatusQ.data?.enabled === true;
+   360→
+   361→  const [setupOpen, setSetupOpen] = React.useState(false);
+   362→  const [setupData, setSetupData] = React.useState<MfaSetup | null>(null);
+   363→  const [setupCode, setSetupCode] = React.useState("");
+   364→  const [copied, setCopied] = React.useState(false);
+   365→
+   366→  const mfaSetupM = useMutation({
+   367→    mutationFn: () => apiFetch<MfaSetup>("/auth/mfa/setup", { method: "POST" }),
+   368→    onSuccess: (d) => setSetupData(d),
+   369→    onError: (e) => {
+   370→      toast.error("Gagal menyiapkan MFA", { description: errMsg(e) });
+   371→      setSetupOpen(false);
+   372→    },
+   373→  });
+   374→
+   375→  const openSetup = () => {
+   376→    setSetupData(null);
+   377→    setSetupCode("");
+   378→    setCopied(false);
+   379→    setSetupOpen(true);
+   380→    mfaSetupM.mutate();
+   381→  };
+   382→
+   383→  const copySecret = async () => {
+   384→    if (!setupData?.secret) return;
+   385→    try {
+   386→      await navigator.clipboard.writeText(setupData.secret);
+   387→      setCopied(true);
+   388→      toast.success("Secret disalin ke clipboard");
+   389→      setTimeout(() => setCopied(false), 2000);
+   390→    } catch {
+   391→      toast.error("Gagal menyalin — salin manual dari teks secret");
+   392→    }
+   393→  };
+   394→
+   395→  const mfaEnableM = useMutation({
+   396→    mutationFn: (code: string) =>
+   397→      apiFetch<unknown>("/auth/mfa/enable", { method: "POST", body: { code } }),
+   398→    onSuccess: () => {
+   399→      toast.success("MFA diaktifkan", {
+   400→        description: "Login berikutnya akan meminta kode authenticator.",
+   401→      });
+   402→      setSetupOpen(false);
+   403→      setSetupCode("");
+   404→      setSetupData(null);
+   405→      void qc.invalidateQueries({ queryKey: ["auth", "mfa"] });
+   406→    },
+   407→    onError: (e) => toast.error("Kode ditolak", { description: errMsg(e) }),
+   408→  });
+   409→
+   410→  const [disableOpen, setDisableOpen] = React.useState(false);
+   411→  const [disableCode, setDisableCode] = React.useState("");
+   412→
+   413→  const mfaDisableM = useMutation({
+   414→    mutationFn: (code: string) =>
+   415→      apiFetch<unknown>("/auth/mfa/disable", { method: "POST", body: { code } }),
+   416→    onSuccess: () => {
+   417→      toast.success("MFA dinonaktifkan", {
+   418→        description: "Login tidak lagi meminta kode authenticator.",
+   419→      });
+   420→      setDisableOpen(false);
+   421→      setDisableCode("");
+   422→      void qc.invalidateQueries({ queryKey: ["auth", "mfa"] });
+   423→    },
+   424→    onError: (e) => toast.error("Kode ditolak", { description: errMsg(e) }),
+   425→  });
+   426→
+   427→  return (
+   428→    <div className="space-y-6">
+   429→      <PageHeader
+   430→        title="Pengaturan"
+   431→        subtitle="Preferensi tampilan, target alokasi, keamanan, dan portabilitas data."
+   432→      />
+   433→
+   434→      {settingsQ.isError && (
+   435→        <ErrorBox message={errMsg(settingsQ.error)} onRetry={() => void settingsQ.refetch()} />
+   436→      )}
+   437→
+   438→      {/* ================= Preferensi ================= */}
+   439→      <SectionCard title="Preferensi" description="Tampilan mata uang & tema aplikasi">
+   440→        <div className="grid gap-6 sm:grid-cols-2">
+   441→          <div className="space-y-2">
+   442→            <Label htmlFor="pref-currency">
+   443→              <span className="inline-flex items-center gap-1.5">
+   444→                <DatabaseBackup className="h-3.5 w-3.5" aria-hidden="true" />
+   445→                Mata Uang Tampilan
+   446→              </span>
+   447→            </Label>
+   448→            <Select
+   449→              value={displayCurrency}
+   450→              onValueChange={(v) => {
+   451→                setDisplayCurrency(v as "USD" | "IDR");
+   452→                if (isOwner) putM.mutate({ displayCurrency: v });
+   453→              }}
+   454→            >
+   455→              <SelectTrigger id="pref-currency" className="w-full sm:w-48">
+   456→                <SelectValue />
+   457→              </SelectTrigger>
+   458→              <SelectContent>
+   459→                <SelectItem value="USD">USD — Dolar AS ($)</SelectItem>
+   460→                <SelectItem value="IDR">IDR — Rupiah (Rp)</SelectItem>
+   461→              </SelectContent>
+   462→            </Select>
+   463→            <p className="text-xs text-muted-foreground">
+   464→              {isOwner
+   465→                ? "Tersimpan ke server & perangkat ini."
+   466→                : "Tersimpan di perangkat ini (ubah server hanya owner)."}
+   467→            </p>
+   468→          </div>
+   469→
+   470→          <div className="space-y-2">
+   471→            <Label htmlFor="pref-theme">
+   472→              <span className="inline-flex items-center gap-1.5">
+   473→                <Palette className="h-3.5 w-3.5" aria-hidden="true" />
+   474→                Tema
+   475→              </span>
+   476→            </Label>
+   477→            <Select value={theme ?? "system"} onValueChange={(v) => setTheme(v)}>
+   478→              <SelectTrigger id="pref-theme" className="w-full sm:w-48">
+   479→                <SelectValue />
+   480→              </SelectTrigger>
+   481→              <SelectContent>
+   482→                <SelectItem value="light">
+   483→                  <span className="inline-flex items-center gap-1.5">
+   484→                    <Sun className="h-3.5 w-3.5" aria-hidden="true" /> Terang
+   485→                  </span>
+   486→                </SelectItem>
+   487→                <SelectItem value="dark">
+   488→                  <span className="inline-flex items-center gap-1.5">
+   489→                    <Moon className="h-3.5 w-3.5" aria-hidden="true" /> Gelap
+   490→                  </span>
+   491→                </SelectItem>
+   492→                <SelectItem value="system">
+   493→                  <span className="inline-flex items-center gap-1.5">
+   494→                    <Monitor className="h-3.5 w-3.5" aria-hidden="true" /> Sistem
+   495→                  </span>
+   496→                </SelectItem>
+   497→              </SelectContent>
+   498→            </Select>
+   499→            <p className="text-xs text-muted-foreground">Mengikuti preferensi perangkat bila Sistem.</p>
+   500→          </div>
+   501→        </div>
+   502→      </SectionCard>
+   503→
+   504→      {/* ================= Target Alokasi ================= */}
+   505→      <SectionCard
+   506→        title="Target Alokasi"
+   507→        description="Komposisi ideal portofolio — pembanding untuk analisis risiko"
+   508→        actions={
+   509→          <Badge
+   510→            variant="outline"
+   511→            className={cn(
+   512→              "tabular-nums",
+   513→              totalOk
+   514→                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   515→                : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+   516→            )}
+   517→          >
+   518→            Total {total.toString().replace(".", ",")}%
+   519→            {totalOk ? " ✓" : " — harus 100%"}
+   520→          </Badge>
+   521→        }
+   522→      >
+   523→        {settingsQ.isPending ? (
+   524→          <LoadingRows rows={5} />
+   525→        ) : (
+   526→          <div className="space-y-5">
+   527→            {ALLOC_KEYS.map(({ key, label }) => (
+   528→              <div key={key} className="space-y-2">
+   529→                <div className="flex items-center justify-between">
+   530→                  <Label htmlFor={`alloc-${key}`}>{label}</Label>
+   531→                  <span className="text-sm font-semibold tabular-nums">
+   532→                    {targets[key].toString().replace(".", ",")}%
+   533→                  </span>
+   534→                </div>
+   535→                <Slider
+   536→                  id={`alloc-${key}`}
+   537→                  min={0}
+   538→                  max={100}
+   539→                  step={1}
+   540→                  value={[targets[key]]}
+   541→                  onValueChange={(v) => {
+   542→                    setTargets((t) => ({ ...t, [key]: v[0] }));
+   543→                    setDirty(true);
+   544→                  }}
+   545→                  disabled={!isOwner}
+   546→                />
+   547→              </div>
+   548→            ))}
+   549→            <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+   550→              {!isOwner && (
+   551→                <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+   552→                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
+   553→                  Hanya owner yang dapat mengubah target alokasi.
+   554→                </p>
+   555→              )}
+   556→              {isOwner && !totalOk && (
+   557→                <p className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
+   558→                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+   559→                  Jumlah target harus tepat 100% sebelum dapat disimpan.
+   560→                </p>
+   561→              )}
+   562→              {isOwner && (
+   563→                <Button
+   564→                  className="ml-auto min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+   565→                  disabled={!totalOk || putM.isPending}
+   566→                  onClick={saveTargets}
+   567→                >
+   568→                  {putM.isPending ? (
+   569→                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   570→                  ) : (
+   571→                    <Check className="h-4 w-4" aria-hidden="true" />
+   572→                  )}
+   573→                  Simpan Target
+   574→                </Button>
+   575→              )}
+   576→            </div>
+   577→          </div>
+   578→        )}
+   579→      </SectionCard>
+   580→
+   581→      {/* ================= Keamanan & Darurat ================= */}
+   582→      <SectionCard title="Keamanan & Darurat" description="Kill-switch untuk membekukan seluruh operasi tulis">
+   583→        <Card
+   584→          className={cn(
+   585→            "rounded-xl border-2 p-5 transition-colors",
+   586→            panicOn ? "border-rose-500/50 bg-rose-500/[0.04]" : "border-border",
+   587→          )}
+   588→        >
+   589→          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   590→            <div className="flex items-start gap-3">
+   591→              <span
+   592→                className={cn(
+   593→                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+   594→                  panicOn
+   595→                    ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
+   596→                    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+   597→                )}
+   598→                aria-hidden="true"
+   599→              >
+   600→                <Siren className="h-5 w-5" />
+   601→              </span>
+   602→              <div className="space-y-0.5">
+   603→                <p className="font-semibold">Panic Mode (Kill Switch)</p>
+   604→                <p className="text-sm text-muted-foreground">
+   605→                  Saat aktif, semua endpoint mutasi menolak request (HTTP 423) — hanya owner dapat
+   606→                  mematikannya.
+   607→                </p>
+   608→                <div className="pt-1">
+   609→                  {statusQ.isPending ? (
+   610→                    <Badge variant="outline">Memeriksa status…</Badge>
+   611→                  ) : statusQ.isError ? (
+   612→                    <Badge
+   613→                      variant="outline"
+   614→                      className="border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+   615→                    >
+   616→                      Status tidak tersedia
+   617→                    </Badge>
+   618→                  ) : panicOn ? (
+   619→                    <Badge className="border-transparent bg-rose-500/15 text-rose-700 dark:text-rose-400">
+   620→                      <Siren className="h-3 w-3" aria-hidden="true" /> AKTIF — mutasi diblokir
+   621→                    </Badge>
+   622→                  ) : (
+   623→                    <Badge className="border-transparent bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+   624→                      <ShieldCheck className="h-3 w-3" aria-hidden="true" /> Normal
+   625→                    </Badge>
+   626→                  )}
+   627→                </div>
+   628→              </div>
+   629→            </div>
+   630→
+   631→            {isOwner && (
+   632→              <div className="flex shrink-0 items-center gap-3">
+   633→                {!panicOn ? (
+   634→                  <>
+   635→                    <Switch
+   636→                      checked={false}
+   637→                      onCheckedChange={(v) => {
+   638→                        if (v) setPanicOpen(true);
+   639→                      }}
+   640→                      aria-label="Aktifkan panic mode"
+   641→                    />
+   642→                    <ConfirmButton
+   643→                      variant="destructive"
+   644→                      onConfirm={() => setPanicOpen(true)}
+   645→                      confirmLabel="Yakin? Klik lagi"
+   646→                      className="min-h-[40px]"
+   647→                    >
+   648→                      AKTIFKAN PANIC MODE
+   649→                    </ConfirmButton>
+   650→                  </>
+   651→                ) : (
+   652→                  <ConfirmButton
+   653→                    variant="outline"
+   654→                    className="min-h-[40px] border-rose-500/40 text-rose-600 dark:text-rose-400"
+   655→                    onConfirm={() => panicM.mutate(false)}
+   656→                  >
+   657→                    {panicM.isPending ? (
+   658→                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   659→                    ) : null}
+   660→                    Matikan Panic Mode
+   661→                  </ConfirmButton>
+   662→                )}
+   663→              </div>
+   664→            )}
+   665→          </div>
+   666→
+   667→          {!isOwner && (
+   668→            <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+   669→              Status read-only — kontrol panic mode hanya tersedia untuk owner.
+   670→            </p>
+   671→          )}
+   672→        </Card>
+   673→      </SectionCard>
+   674→
+   675→      {/* ================= Autentikasi Dua Faktor (MFA) ================= */}
+   676→      <SectionCard
+   677→        title="Autentikasi Dua Faktor (MFA)"
+   678→        description="Lapisan TOTP untuk login — setiap pengguna mengelola MFA miliknya sendiri"
+   679→        actions={
+   680→          mfaStatusQ.isPending ? (
+   681→            <Badge variant="outline" className="text-muted-foreground">
+   682→              Memeriksa status…
+   683→            </Badge>
+   684→          ) : mfaStatusQ.isError ? (
+   685→            <Badge
+   686→              variant="outline"
+   687→              className="border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+   688→            >
+   689→              Status tidak tersedia
+   690→            </Badge>
+   691→          ) : mfaEnabled ? (
+   692→            <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+   693→              <ShieldCheck className="h-3 w-3" aria-hidden="true" /> Aktif
+   694→            </Badge>
+   695→          ) : (
+   696→            <Badge
+   697→              variant="outline"
+   698→              className="border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300"
+   699→            >
+   700→              Nonaktif
+   701→            </Badge>
+   702→          )
+   703→        }
+   704→      >
+   705→        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   706→          <div className="flex items-start gap-3">
+   707→            <span
+   708→              className={cn(
+   709→                "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+   710→                mfaEnabled
+   711→                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+   712→                  : "bg-zinc-500/10 text-zinc-500 dark:text-zinc-400",
+   713→              )}
+   714→              aria-hidden="true"
+   715→            >
+   716→              <Smartphone className="h-5 w-5" />
+   717→            </span>
+   718→            <div className="space-y-0.5">
+   719→              <p className="text-sm font-medium">
+   720→                {mfaEnabled
+   721→                  ? "Akun Anda dilindungi kode authenticator (TOTP)"
+   722→                  : "Tambahkan lapisan keamanan ekstra di login"}
+   723→              </p>
+   724→              <p className="text-sm text-muted-foreground">
+   725→                {mfaEnabled
+   726→                  ? "Setiap login meminta kode 6 digit dari aplikasi authenticator setelah email & password benar."
+   727→                  : "Setelah aktif, login meminta kode 6 digit dari aplikasi authenticator (Google Authenticator, Authy, dsb.)."}
+   728→              </p>
+   729→              {mfaStatusQ.isError && (
+   730→                <p className="text-xs text-rose-600 dark:text-rose-400">
+   731→                  Gagal memuat status MFA — {errMsg(mfaStatusQ.error)}
+   732→                </p>
+   733→              )}
+   734→            </div>
+   735→          </div>
+   736→
+   737→          <div className="flex shrink-0 items-center gap-2">
+   738→            {mfaEnabled ? (
+   739→              <Button
+   740→                type="button"
+   741→                variant="outline"
+   742→                className={cn(
+   743→                  focusRing,
+   744→                  "min-h-[40px] border-rose-500/40 text-rose-600 dark:text-rose-400",
+   745→                )}
+   746→                onClick={() => {
+   747→                  setDisableCode("");
+   748→                  setDisableOpen(true);
+   749→                }}
+   750→              >
+   751→                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+   752→                Nonaktifkan MFA
+   753→              </Button>
+   754→            ) : (
+   755→              <Button
+   756→                type="button"
+   757→                className={cn(
+   758→                  focusRing,
+   759→                  "min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700",
+   760→                )}
+   761→                onClick={openSetup}
+   762→                disabled={mfaSetupM.isPending}
+   763→              >
+   764→                {mfaSetupM.isPending && setupOpen ? (
+   765→                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   766→                ) : (
+   767→                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+   768→                )}
+   769→                Aktifkan MFA
+   770→              </Button>
+   771→            )}
+   772→          </div>
+   773→        </div>
+   774→      </SectionCard>
+   775→
+   776→      {/* ================= Data & Portabilitas ================= */}
+   777→      <SectionCard title="Data & Portabilitas" description="Ekspor seluruh data platform dalam format JSON">
+   778→        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   779→          <div className="flex items-start gap-3">
+   780→            <span
+   781→              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+   782→              aria-hidden="true"
+   783→            >
+   784→              <Download className="h-5 w-5" />
+   785→            </span>
+   786→            <div>
+   787→              <p className="text-sm font-medium">Ekspor JSON lengkap</p>
+   788→              <p className="text-sm text-muted-foreground">
+   789→                Berisi pengguna, entitas, aset, transaksi, riset, suksesi, goals, audit log, dsb.
+   790→              </p>
+   791→              {!isOwner && (
+   792→                <p className="mt-1 text-xs italic text-muted-foreground/70">
+   793→                  Fitur ekspor hanya tersedia untuk owner.
+   794→                </p>
+   795→              )}
+   796→            </div>
+   797→          </div>
+   798→          {isOwner && (
+   799→            <Button
+   800→              className="min-h-[40px] shrink-0 bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+   801→              onClick={() => exportM.mutate()}
+   802→              disabled={exportM.isPending}
+   803→            >
+   804→              {exportM.isPending ? (
+   805→                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   806→              ) : (
+   807→                <Download className="h-4 w-4" aria-hidden="true" />
+   808→              )}
+   809→              Ekspor Seluruh Data (JSON)
+   810→            </Button>
+   811→          )}
+   812→        </div>
+   813→        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-700 dark:text-amber-400">
+   814→          <DatabaseBackup className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+   815→          <span>
+   816→            Backup terenkripsi harian dijalankan otomatis di luar jam pasar; lakukan uji restore
+   817→            berkala dan simpan salinan ekspor di lokasi terpisah (rekomendasi PRD keamanan data).
+   818→          </span>
+   819→        </div>
+   820→      </SectionCard>
+   821→
+   822→      {/* ================= Roadmap Platform (PRD) ================= */}
+   823→      <SectionCard
+   824→        title="Roadmap Platform (PRD)"
+   825→        description="Transparansi cakupan MVP — 8 modul, 50 fitur PRD: sudah Live vs jadwal Roadmap"
+   826→      >
+   827→        <Accordion type="single" collapsible className="w-full" defaultValue="module-a">
+   828→          {ROADMAP.map((m) => {
+   829→            const liveCount = m.features.filter((f) => f.live).length;
+   830→            return (
+   831→              <AccordionItem key={m.code} value={`module-${m.code.toLowerCase()}`}>
+   832→                <AccordionTrigger className="hover:no-underline">
+   833→                  <span className="flex flex-wrap items-center gap-2 pr-2 text-left">
+   834→                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/10 font-mono text-xs font-bold text-emerald-700 dark:text-emerald-400">
+   835→                      {m.code}
+   836→                    </span>
+   837→                    <span className="font-medium">{m.name}</span>
+   838→                    <Badge
+   839→                      variant="outline"
+   840→                      className="border-zinc-500/40 px-1.5 py-0 text-[10px] tabular-nums text-muted-foreground"
+   841→                    >
+   842→                      {liveCount}/{m.features.length} Live
+   843→                    </Badge>
+   844→                  </span>
+   845→                </AccordionTrigger>
+   846→                <AccordionContent>
+   847→                  <ul className="grid gap-2 pt-1 sm:grid-cols-2">
+   848→                    {m.features.map((f) => (
+   849→                      <li
+   850→                        key={f.label}
+   851→                        className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm"
+   852→                      >
+   853→                        <span className="min-w-0 truncate">{f.label}</span>
+   854→                        <LiveBadge live={f.live} />
+   855→                      </li>
+   856→                    ))}
+   857→                  </ul>
+   858→                </AccordionContent>
+   859→              </AccordionItem>
+   860→            );
+   861→          })}
+   862→        </Accordion>
+   863→        <p className="mt-4 flex items-start gap-1.5 text-xs text-muted-foreground/70">
+   864→          <PieChart className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+   865→          Fitur bertanda &ldquo;Live&rdquo; sudah berjalan di platform ini; &ldquo;Roadmap&rdquo;
+   866→          menyusul pada fase berikutnya sesuai PRD (Fase 0–4).
+   867→        </p>
+   868→      </SectionCard>
+   869→
+   870→      {/* ================= Dialog: Aktifkan MFA (setup) ================= */}
+   871→      <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+   872→        <DialogContent className="max-h-[90vh] overflow-y-auto scrollbar-thin sm:max-w-md">
+   873→          <DialogHeader>
+   874→            <DialogTitle className="flex items-center gap-2">
+   875→              <Smartphone className="h-5 w-5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+   876→              Aktifkan Autentikasi Dua Faktor
+   877→            </DialogTitle>
+   878→            <DialogDescription>
+   879→              Tambahkan secret ke aplikasi authenticator (Google Authenticator, Authy), lalu masukkan
+   880→              kode 6 digit yang muncul untuk konfirmasi.
+   881→            </DialogDescription>
+   882→          </DialogHeader>
+   883→
+   884→          {mfaSetupM.isPending || !setupData ? (
+   885→            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+   886→              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   887→              Menyiapkan secret…
+   888→            </div>
+   889→          ) : (
+   890→            <div className="space-y-4">
+   891→              <div className="space-y-1.5">
+   892→                <Label htmlFor="mfa-secret">Secret</Label>
+   893→                <div className="flex items-center gap-2">
+   894→                  <code
+   895→                    id="mfa-secret"
+   896→                    className="min-w-0 flex-1 truncate rounded-lg border bg-muted px-3 py-2 font-mono text-sm tracking-wider"
+   897→                  >
+   898→                    {setupData.secret}
+   899→                  </code>
+   900→                  <Button
+   901→                    type="button"
+   902→                    variant="outline"
+   903→                    size="sm"
+   904→                    className={cn(focusRing, "h-9 shrink-0")}
+   905→                    onClick={() => void copySecret()}
+   906→                  >
+   907→                    {copied ? (
+   908→                      <Check className="h-4 w-4" aria-hidden="true" />
+   909→                    ) : (
+   910→                      <Copy className="h-4 w-4" aria-hidden="true" />
+   911→                    )}
+   912→                    {copied ? "Tersalin" : "Salin"}
+   913→                  </Button>
+   914→                </div>
+   915→              </div>
+   916→
+   917→              <div className="space-y-1.5">
+   918→                <Label>Tautan otpauth://</Label>
+   919→                <a
+   920→                  href={setupData.otpauthUrl}
+   921→                  target="_blank"
+   922→                  rel="noopener noreferrer"
+   923→                  className={cn(
+   924→                    focusRing,
+   925→                    "block truncate rounded-lg border px-3 py-2 font-mono text-xs text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400",
+   926→                  )}
+   927→                  title={setupData.otpauthUrl}
+   928→                >
+   929→                  {setupData.otpauthUrl}
+   930→                </a>
+   931→                <p className="text-xs text-muted-foreground">
+   932→                  Buka tautan di perangkat ini untuk menambahkan akun otomatis ke aplikasi
+   933→                  authenticator.
+   934→                </p>
+   935→              </div>
+   936→
+   937→              <div className="space-y-1.5">
+   938→                <Label htmlFor="mfa-enable-code">
+   939→                  Masukkan kode 6 digit dari aplikasi authenticator
+   940→                </Label>
+   941→                <Input
+   942→                  id="mfa-enable-code"
+   943→                  inputMode="numeric"
+   944→                  autoComplete="one-time-code"
+   945→                  maxLength={6}
+   946→                  placeholder="000000"
+   947→                  value={setupCode}
+   948→                  onChange={(e) => setSetupCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+   949→                  className={cn(focusRing, "text-center font-mono text-lg tracking-[0.4em]")}
+   950→                  disabled={mfaEnableM.isPending}
+   951→                />
+   952→              </div>
+   953→            </div>
+   954→          )}
+   955→
+   956→          <DialogFooter>
+   957→            <Button
+   958→              type="button"
+   959→              variant="outline"
+   960→              onClick={() => setSetupOpen(false)}
+   961→              disabled={mfaEnableM.isPending}
+   962→            >
+   963→              Batal
+   964→            </Button>
+   965→            <Button
+   966→              type="button"
+   967→              className={cn(focusRing, "bg-emerald-600 text-primary-foreground hover:bg-emerald-700")}
+   968→              disabled={mfaSetupM.isPending || !setupData || setupCode.length !== 6 || mfaEnableM.isPending}
+   969→              onClick={() => mfaEnableM.mutate(setupCode)}
+   970→            >
+   971→              {mfaEnableM.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+   972→              Aktifkan MFA
+   973→            </Button>
+   974→          </DialogFooter>
+   975→        </DialogContent>
+   976→      </Dialog>
+   977→
+   978→      {/* ================= Dialog: Nonaktifkan MFA ================= */}
+   979→      <Dialog open={disableOpen} onOpenChange={setDisableOpen}>
+   980→        <DialogContent className="sm:max-w-md">
+   981→          <DialogHeader>
+   982→            <DialogTitle className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+   983→              <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+   984→              Nonaktifkan Autentikasi Dua Faktor?
+   985→            </DialogTitle>
+   986→            <DialogDescription>
+   987→              Akun Anda hanya dilindungi email &amp; password. Masukkan kode 6 digit dari aplikasi
+   988→              authenticator untuk konfirmasi.
+   989→            </DialogDescription>
+   990→          </DialogHeader>
+   991→          <Input
+   992→            inputMode="numeric"
+   993→            autoComplete="one-time-code"
+   994→            maxLength={6}
+   995→            placeholder="000000"
+   996→            value={disableCode}
+   997→            onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+   998→            className={cn(focusRing, "text-center font-mono text-lg tracking-[0.4em]")}
+   999→            disabled={mfaDisableM.isPending}
+  1000→            aria-label="Kode authenticator untuk konfirmasi nonaktif"
+  1001→          />
+  1002→          <DialogFooter>
+  1003→            <Button
+  1004→              type="button"
+  1005→              variant="outline"
+  1006→              onClick={() => setDisableOpen(false)}
+  1007→              disabled={mfaDisableM.isPending}
+  1008→            >
+  1009→              Batal
+  1010→            </Button>
+  1011→            <Button
+  1012→              type="button"
+  1013→              variant="destructive"
+  1014→              disabled={disableCode.length !== 6 || mfaDisableM.isPending}
+  1015→              onClick={() => mfaDisableM.mutate(disableCode)}
+  1016→            >
+  1017→              {mfaDisableM.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+  1018→              Nonaktifkan MFA
+  1019→            </Button>
+  1020→          </DialogFooter>
+  1021→        </DialogContent>
+  1022→      </Dialog>
+  1023→
+  1024→      {/* ================= Dialog konfirmasi PANIC ================= */}
+  1025→      <Dialog open={panicOpen} onOpenChange={setPanicOpen}>
+  1026→        <DialogContent className="sm:max-w-md">
+  1027→          <DialogHeader>
+  1028→            <DialogTitle className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+  1029→              <Siren className="h-5 w-5" aria-hidden="true" />
+  1030→              Aktifkan Panic Mode?
+  1031→            </DialogTitle>
+  1032→            <DialogDescription>
+  1033→              Seluruh operasi tulis (aset, transaksi, riset, suksesi, pengaturan) akan diblokir
+  1034→              hingga owner mematikannya. Ketik <span className="font-mono font-semibold">PANIC</span>{" "}
+  1035→              untuk konfirmasi.
+  1036→            </DialogDescription>
+  1037→          </DialogHeader>
+  1038→          <Input
+  1039→            value={panicText}
+  1040→            onChange={(e) => setPanicText(e.target.value)}
+  1041→            placeholder="Ketik PANIC"
+  1042→            className="font-mono tracking-widest"
+  1043→            aria-label="Ketik PANIC untuk konfirmasi"
+  1044→          />
+  1045→          <DialogFooter>
+  1046→            <Button
+  1047→              variant="outline"
+  1048→              onClick={() => {
+  1049→                setPanicOpen(false);
+  1050→                setPanicText("");
+  1051→              }}
+  1052→              disabled={panicM.isPending}
+  1053→            >
+  1054→              Batal
+  1055→            </Button>
+  1056→            <Button
+  1057→              variant="destructive"
+  1058→              disabled={panicText !== "PANIC" || panicM.isPending}
+  1059→              onClick={() => panicM.mutate(true)}
+  1060→            >
+  1061→              {panicM.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+  1062→              AKTIFKAN PANIC MODE
+  1063→            </Button>
+  1064→          </DialogFooter>
+  1065→        </DialogContent>
+  1066→      </Dialog>
+  1067→    </div>
+  1068→  );
+  1069→}
+  1070→

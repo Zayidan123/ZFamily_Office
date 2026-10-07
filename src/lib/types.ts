@@ -283,7 +283,9 @@ export interface Capsule {
   content: string | null;
 }
 
-// ---------- PnL FIFO per aset (v1.4.0 — Task U-a/U-b) ----------
+// ---------- PnL FIFO/LIFO/Average per aset (v1.4.0 U-a/U-b; ronde 7 +metode) ----------
+export type CostMethod = "fifo" | "lifo" | "average";
+
 export interface AssetPnlLot {
   at: string;
   type: string; // "buy" | "sell" | …
@@ -297,6 +299,8 @@ export interface AssetPnl {
   assetName: string;
   symbol?: string | null;
   currency: string;
+  /** metode cost basis dipakai (ronde 7) — echo dari query param */
+  method?: CostMethod;
   realizedPnlUsd: number;
   /** null jika aset tanpa riwayat buy (basis biaya belum terbentuk) */
   avgCostUsd: number | null;
@@ -306,6 +310,26 @@ export interface AssetPnl {
   unrealizedPnlUsd: number | null;
   unrealizedPnlPct: number | null;
   lots: AssetPnlLot[];
+}
+
+// ---------- Backup database (ronde 7 — /system/backups*) ----------
+export interface SystemBackup {
+  name: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface SystemBackupList {
+  backups: SystemBackup[];
+  maxKeep: number;
+}
+
+export interface SystemBackupCreated {
+  name: string;
+  sizeBytes: number;
+  totalBackups: number;
+  pruned: number;
+  backups: SystemBackup[];
 }
 
 // ---------- Laporan Kinerja Bulanan (v1.4.0 — Task U-a/U-b) ----------

@@ -705,7 +705,72 @@ export default function TransactionsView() {
           </div>
         ) : (
           <TooltipProvider delayDuration={200}>
-            <div className="max-h-96 overflow-auto scrollbar-thin">
+            {/* ---------- Kartu mobile (<md) — tabel 8 kolom tidak muat di 390px ---------- */}
+            <div className="scrollbar-thin max-h-[26rem] space-y-2.5 overflow-y-auto px-4 pb-4 md:hidden">
+              {txs.map((tx) => {
+                const meta = txMeta(tx.type);
+                const inflow = meta.dir === "in";
+                const neutral = meta.dir === "neutral";
+                const DirIcon = meta.icon;
+                return (
+                  <div
+                    key={String(tx.id)}
+                    className="rounded-xl border bg-card p-3 shadow-sm"
+                  >
+                    <div className="flex items-center gap-2">
+                      <DirIcon
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          neutral && "text-zinc-500",
+                          !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+                          !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+                        )}
+                        aria-hidden="true"
+                      />
+                      <TypeBadge type={tx.type} />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {tx.assetName ?? `#${tx.assetId}`}
+                      </span>
+                      <MoneyCell
+                        usd={tx.totalUsd}
+                        sign={neutral ? undefined : inflow ? "+" : "−"}
+                        className={cn(
+                          "shrink-0 text-sm font-semibold",
+                          neutral && "text-muted-foreground",
+                          !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+                          !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+                        )}
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1.5 tabular-nums">
+                        {formatDate(tx.at)}
+                        <span aria-hidden="true">·</span>
+                        {timeAgo(tx.at)}
+                      </span>
+                      <span className="tabular-nums">
+                        {formatNumber(tx.quantity, 6)} × <MoneyCell usd={tx.priceUsd} />
+                      </span>
+                    </div>
+                    {(tx.feeUsd > 0 || tx.note?.trim()) && (
+                      <div className="mt-1.5 flex items-center justify-between gap-2 border-t pt-1.5 text-xs">
+                        <span className="min-w-0 truncate text-muted-foreground">
+                          {tx.note?.trim() ? `“${tx.note.trim()}”` : ""}
+                        </span>
+                        {tx.feeUsd > 0 && (
+                          <span className="shrink-0 text-muted-foreground">
+                            Fee <MoneyCell usd={tx.feeUsd} />
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ---------- Tabel (≥md) ---------- */}
+            <div className="hidden max-h-96 overflow-auto scrollbar-thin md:block">
               <Table>
                 <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
                   <TableRow className="hover:bg-transparent">

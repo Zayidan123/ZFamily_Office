@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTheme } from "next-themes";
 import { useAppStore } from "@/lib/store";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, apiGetBlob, ApiError } from "@/lib/api";
 import {
   PageHeader,
   SectionCard,
@@ -18,8 +18,14 @@ import {
   LoadingRows,
   ConfirmButton,
 } from "@/components/shared/kit";
-import type { AllocationTarget, Settings } from "@/lib/types";
+import type {
+  AllocationTarget,
+  Settings,
+  SystemBackupCreated,
+  SystemBackupList,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -60,11 +66,13 @@ import {
   Moon,
   Palette,
   PieChart,
+  Plus,
   ShieldCheck,
   Siren,
   Smartphone,
   Sun,
 } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
 
 type SettingsData = Settings & { panicMode?: boolean };
 
@@ -188,7 +196,7 @@ const ROADMAP: { code: string; name: string; features: { label: string; live: bo
       { label: "Rekap transaksi & PnL tercatat", live: true },
       { label: "Ekspor data penuh (portabilitas)", live: true },
       { label: "Kalkulasi pajak kripto multi-yurisdiksi", live: false },
-      { label: "Cost-basis engine FIFO/LIFO", live: false },
+      { label: "Cost-basis engine FIFO/LIFO/Rata-rata", live: true },
       { label: "Tracking regulasi lintas negara", live: false },
       { label: "Laporan FATCA/CRS helper", live: false },
       { label: "Integrasi e-filing DJP", live: false },
@@ -348,6 +356,50 @@ export default function SettingsView() {
         description: `family-office-export-*.json · ${(size / 1024).toFixed(1)} KB`,
       }),
     onError: (e) => toast.error("Gagal mengekspor data", { description: errMsg(e) }),
+  });
+
+  // ---------- Backup database (ronde 7) ----------
+  const backupsQ = useQuery<SystemBackupList, ApiError>({
+    queryKey: ["system", "backups"],
+    queryFn: () => apiFetch<SystemBackupList>("/system/backups"),
+    enabled: isOwner,
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const backupM = useMutation({
+    mutationFn: () => apiFetch<SystemBackupCreated>("/system/backup", { method: "POST" }),
+    onSuccess: (d) => {
+      void qc.invalidateQueries({ queryKey: ["system", "backups"] });
+      toast.success("Backup database dibuat", {
+        description: `${d.name} · ${(d.sizeBytes / 1024).toFixed(0)} KB · ${d.totalBackups} backup tersimpan`,
+      });
+    },
+    onError: (e) =>
+      toast.error("Gagal membuat backup", {
+        description: e instanceof ApiError ? e.message : "Backend belum terjangkau",
+      }),
+  });
+
+  const downloadBackupM = useMutation({
+    mutationFn: async (name: string) => {
+      const blob = await apiGetBlob(`/system/backups/${encodeURIComponent(name)}/download`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return blob.size;
+    },
+    onSuccess: (size, name) =>
+      toast.success("Backup diunduh", { description: `${name} · ${(size / 1024).toFixed(0)} KB` }),
+    onError: (e) =>
+      toast.error("Gagal mengunduh backup", {
+        description: e instanceof ApiError ? e.message : "Backend belum terjangkau",
+      }),
   });
 
   // ---------- MFA — Autentikasi Dua Faktor (Task S-b) ----------
@@ -817,6 +869,91 @@ export default function SettingsView() {
             berkala dan simpan salinan ekspor di lokasi terpisah (rekomendasi PRD keamanan data).
           </span>
         </div>
+
+        {/* ---------- Backup database (ronde 7) — owner-only ---------- */}
+        {isOwner && (
+          <div className="mt-4 rounded-xl border p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <DatabaseBackup className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  Snapshot Backup Database
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Snapshot konsisten SQLite — maksimal {backupsQ.data?.maxKeep ?? 20} backup
+                  terakhir disimpan di server (backup lama dipangkas otomatis).
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="min-h-[40px] shrink-0 bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+                onClick={() => backupM.mutate()}
+                disabled={backupM.isPending}
+                aria-label="Buat snapshot backup database sekarang"
+              >
+                {backupM.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                )}
+                Buat Backup Sekarang
+              </Button>
+            </div>
+
+            <div className="mt-3" aria-live="polite">
+              {backupsQ.isPending ? (
+                <div className="space-y-2">
+                  {[0, 1].map((i) => <Skeleton key={i} className="h-12 w-full rounded-lg" />)}
+                </div>
+              ) : backupsQ.isError ? (
+                <p className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-600 dark:text-rose-400">
+                  Gagal memuat daftar backup — coba muat ulang halaman.
+                </p>
+              ) : (backupsQ.data?.backups.length ?? 0) === 0 ? (
+                <p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
+                  Belum ada backup — buat snapshot pertama Anda.
+                </p>
+              ) : (
+                <ul className="scrollbar-thin max-h-44 space-y-1.5 overflow-y-auto">
+                  {backupsQ.data!.backups.map((b) => (
+                    <li
+                      key={b.name}
+                      className="flex items-center gap-3 rounded-lg border bg-muted/30 px-3 py-2"
+                    >
+                      <DatabaseBackup
+                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-xs font-medium">{b.name}</p>
+                        <p className="text-[10px] tabular-nums text-muted-foreground">
+                          {(b.sizeBytes / 1024).toFixed(0)} KB · {formatDateTime(b.createdAt)}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 gap-1.5 px-2 text-xs"
+                        onClick={() => downloadBackupM.mutate(b.name)}
+                        disabled={downloadBackupM.isPending}
+                        aria-label={`Unduh backup ${b.name}`}
+                      >
+                        {downloadBackupM.isPending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                        Unduh
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
       </SectionCard>
 
       {/* ================= Roadmap Platform (PRD) ================= */}

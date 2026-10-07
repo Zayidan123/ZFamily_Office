@@ -26,7 +26,7 @@ import {
   ASSET_CLASS_STYLE,
   ConfirmButton,
 } from "@/components/shared/kit";
-import type { Asset, AssetClass, AssetClassRow, AssetPnl, Entity } from "@/lib/types";
+import type { Asset, AssetClass, AssetClassRow, AssetPnl, CostMethod, Entity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -74,6 +74,7 @@ import {
   ClipboardList,
   TrendingUp,
   TrendingDown,
+  Info,
   type LucideIcon,
 } from "lucide-react";
 
@@ -530,9 +531,19 @@ function AssetFormDialog({
 }
 
 // ------------------------------------------------------------
-// Section PnL FIFO (dialog detail aset) — Task U-b
-// GET /assets/{id}/pnl · RBAC: executor 403 → section disembunyikan
+// Section PnL FIFO/LIFO/Average (dialog detail aset) — Task U-b, ronde 7
+// GET /assets/{id}/pnl?method= · RBAC: executor 403 → section disembunyikan
 // ------------------------------------------------------------
+
+const PNL_METHODS: { key: CostMethod; label: string; hint: string }[] = [
+  { key: "fifo", label: "FIFO", hint: "Lot terlama dijual duluan" },
+  { key: "lifo", label: "LIFO", hint: "Lot terbaru dijual duluan" },
+  { key: "average", label: "Rata-rata", hint: "Rata-rata bergerak (moving average)" },
+];
+
+function pnlMethodLabel(m: CostMethod | string | undefined): string {
+  return PNL_METHODS.find((x) => x.key === m)?.label ?? "FIFO";
+}
 
 function pnlValueClass(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v) || v === 0) return "";
@@ -592,10 +603,12 @@ function LotTypeBadge({ type }: { type: string }) {
 
 function AssetPnlSection({ assetId }: { assetId: string }) {
   const formatCurrency = useFormatCurrency();
+  const [method, setMethod] = React.useState<CostMethod>("fifo");
 
   const pnlQuery = useQuery<AssetPnl, ApiError>({
-    queryKey: ["assets", "pnl", String(assetId)],
-    queryFn: () => apiFetch<AssetPnl>(`/assets/${assetId}/pnl`),
+    queryKey: ["assets", "pnl", String(assetId), method],
+    queryFn: () =>
+      apiFetch<AssetPnl>(`/assets/${assetId}/pnl`, { params: { method } }),
     staleTime: 30_000,
     retry: false,
   });
@@ -606,7 +619,7 @@ function AssetPnlSection({ assetId }: { assetId: string }) {
     return (
       <div className="border-t pt-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Basis Biaya &amp; PnL (FIFO)
+          Basis Biaya &amp; PnL ({pnlMethodLabel(method)})
         </p>
         <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
           <p className="min-w-0 truncate text-xs text-rose-600 dark:text-rose-400">
@@ -633,7 +646,7 @@ function AssetPnlSection({ assetId }: { assetId: string }) {
     return (
       <div className="border-t pt-4" aria-busy="true" aria-label="Memuat basis biaya & PnL">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Basis Biaya &amp; PnL (FIFO)
+          Basis Biaya &amp; PnL ({pnlMethodLabel(method)})
         </p>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -646,17 +659,36 @@ function AssetPnlSection({ assetId }: { assetId: string }) {
   }
 
   const hasLots = pnl.lots.length > 0;
+  const methodHint = PNL_METHODS.find((x) => x.key === method)?.hint ?? "";
 
   return (
     <div className="border-t pt-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Basis Biaya &amp; PnL (FIFO)
+          Basis Biaya &amp; PnL ({pnlMethodLabel(method)})
         </p>
-        {pnl.symbol && (
-          <span className="text-[10px] font-medium text-muted-foreground">{pnl.symbol}</span>
-        )}
+        <div className="flex items-center gap-2">
+          {pnl.symbol && (
+            <span className="text-[10px] font-medium text-muted-foreground">{pnl.symbol}</span>
+          )}
+          <Select value={method} onValueChange={(v) => setMethod(v as CostMethod)}>
+            <SelectTrigger
+              className="h-7 w-[136px] text-xs"
+              aria-label="Metode basis biaya"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PNL_METHODS.map((m) => (
+                <SelectItem key={m.key} value={m.key} className="text-xs">
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
+      <p className="mt-1 text-[10px] italic text-muted-foreground/80">{methodHint}</p>
 
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <PnlMiniStat
@@ -684,12 +716,21 @@ function AssetPnlSection({ assetId }: { assetId: string }) {
         />
       </div>
 
-      {!hasLots ? (
+      {!hasLots && method !== "average" ? (
         <EmptyState
           title="Belum ada riwayat buy"
           description="Basis biaya belum terbentuk — catat transaksi buy untuk aset ini."
           className="mt-3 py-6"
         />
+      ) : method === "average" ? (
+        <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Metode rata-rata bergerak tidak memakai lot — realized PnL dihitung dari
+            (harga jual − rata-rata) × qty pada setiap penjualan, dan cost basis tersisa
+            adalah rata-rata × sisa unit.
+          </p>
+        </div>
       ) : (
         <div className="mt-3">
           <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

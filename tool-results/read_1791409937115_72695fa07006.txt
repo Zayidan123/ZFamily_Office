@@ -1,0 +1,825 @@
+     1→"use client";
+     2→
+     3→// ============================================================
+     4→// View: Transaksi — Task 2-a
+     5→// Filter type/asset · StatCard arus masuk/keluar · tabel riwayat
+     6→// Dialog catat transaksi (RHF + zod, validasi qty client-side)
+     7→// RBAC: hanya owner bisa mencatat transaksi
+     8→// ============================================================
+     9→import * as React from "react";
+    10→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    11→import { useForm, useWatch, Controller } from "react-hook-form";
+    12→import { zodResolver } from "@hookform/resolvers/zod";
+    13→import { z } from "zod";
+    14→import { toast } from "sonner";
+    15→import { useAppStore } from "@/lib/store";
+    16→import { apiFetch, apiGetBlob, ApiError } from "@/lib/api";
+    17→import { formatNumber, formatDate, timeAgo } from "@/lib/format";
+    18→import {
+    19→  useFormatCurrency,
+    20→  PageHeader,
+    21→  SectionCard,
+    22→  EmptyState,
+    23→  LoadingRows,
+    24→  ErrorBox,
+    25→  ClassBadge,
+    26→  StatCard,
+    27→} from "@/components/shared/kit";
+    28→import type { Asset, Transaction, TransactionType } from "@/lib/types";
+    29→import { cn } from "@/lib/utils";
+    30→import { Button } from "@/components/ui/button";
+    31→import { Badge } from "@/components/ui/badge";
+    32→import { Input } from "@/components/ui/input";
+    33→import { Label } from "@/components/ui/label";
+    34→import { Textarea } from "@/components/ui/textarea";
+    35→import {
+    36→  Dialog,
+    37→  DialogContent,
+    38→  DialogDescription,
+    39→  DialogFooter,
+    40→  DialogHeader,
+    41→  DialogTitle,
+    42→} from "@/components/ui/dialog";
+    43→import {
+    44→  Select,
+    45→  SelectContent,
+    46→  SelectItem,
+    47→  SelectTrigger,
+    48→  SelectValue,
+    49→} from "@/components/ui/select";
+    50→import {
+    51→  Table,
+    52→  TableBody,
+    53→  TableCell,
+    54→  TableHead,
+    55→  TableHeader,
+    56→  TableRow,
+    57→} from "@/components/ui/table";
+    58→import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+    59→import {
+    60→  Plus,
+    61→  Loader2,
+    62→  ArrowDownLeft,
+    63→  ArrowUpRight,
+    64→  ArrowLeftRight,
+    65→  Scale,
+    66→  Info,
+    67→  Download,
+    68→  type LucideIcon,
+    69→} from "lucide-react";
+    70→
+    71→// ------------------------------------------------------------
+    72→// Konstanta
+    73→// ------------------------------------------------------------
+    74→const TX_TYPE_META: Record<
+    75→  TransactionType,
+    76→  { label: string; badge: string; dir: "in" | "out" | "neutral"; icon: LucideIcon }
+    77→> = {
+    78→  buy: {
+    79→    label: "Beli",
+    80→    badge: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    81→    dir: "in",
+    82→    icon: ArrowDownLeft,
+    83→  },
+    84→  sell: {
+    85→    label: "Jual",
+    86→    badge: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+    87→    dir: "out",
+    88→    icon: ArrowUpRight,
+    89→  },
+    90→  transfer_in: {
+    91→    label: "Transfer Masuk",
+    92→    badge: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    93→    dir: "in",
+    94→    icon: ArrowDownLeft,
+    95→  },
+    96→  transfer_out: {
+    97→    label: "Transfer Keluar",
+    98→    badge: "border-zinc-500/40 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+    99→    dir: "out",
+   100→    icon: ArrowUpRight,
+   101→  },
+   102→  income: {
+   103→    label: "Pemasukan",
+   104→    badge: "border-emerald-500/40 bg-transparent text-emerald-700 dark:text-emerald-400",
+   105→    dir: "in",
+   106→    icon: ArrowDownLeft,
+   107→  },
+   108→  expense: {
+   109→    label: "Pengeluaran",
+   110→    badge: "border-rose-500/40 bg-transparent text-rose-700 dark:text-rose-400",
+   111→    dir: "out",
+   112→    icon: ArrowUpRight,
+   113→  },
+   114→  valuation_update: {
+   115→    label: "Update Nilai",
+   116→    badge: "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+   117→    dir: "neutral",
+   118→    icon: Scale,
+   119→  },
+   120→};
+   121→
+   122→const TX_TYPE_OPTIONS = Object.entries(TX_TYPE_META).map(([value, m]) => ({
+   123→  value: value as TransactionType,
+   124→  label: m.label,
+   125→}));
+   126→
+   127→const INFLOW_TYPES: TransactionType[] = ["buy", "transfer_in", "income"];
+   128→const OUTFLOW_TYPES: TransactionType[] = ["sell", "transfer_out", "expense"];
+   129→
+   130→function txMeta(t: string) {
+   131→  return TX_TYPE_META[t as TransactionType] ?? {
+   132→    label: t,
+   133→    badge: "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+   134→    dir: "neutral" as const,
+   135→    icon: Scale,
+   136→  };
+   137→}
+   138→
+   139→function errMsg(err: unknown): string {
+   140→  return err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi";
+   141→}
+   142→
+   143→/** datetime-local value untuk "sekarang" (zona lokal) */
+   144→function nowLocalInput(): string {
+   145→  const d = new Date();
+   146→  const pad = (n: number) => String(n).padStart(2, "0");
+   147→  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+   148→}
+   149→
+   150→function TypeBadge({ type }: { type: string }) {
+   151→  const meta = txMeta(type);
+   152→  return (
+   153→    <Badge variant="outline" className={cn("max-w-full", meta.badge)}>
+   154→      {meta.label}
+   155→    </Badge>
+   156→  );
+   157→}
+   158→
+   159→function FieldError({ message }: { message?: string }) {
+   160→  if (!message) return null;
+   161→  return <p className="text-xs font-medium text-rose-600 dark:text-rose-400">{message}</p>;
+   162→}
+   163→
+   164→/** Sel mata uang (hormati display currency store) */
+   165→function MoneyCell({
+   166→  usd,
+   167→  sign,
+   168→  className,
+   169→}: {
+   170→  usd: number;
+   171→  sign?: "+" | "−";
+   172→  className?: string;
+   173→}) {
+   174→  const format = useFormatCurrency();
+   175→  return (
+   176→    <span className={cn("tabular-nums", className)}>
+   177→      {sign}
+   178→      {format(Math.abs(usd))}
+   179→    </span>
+   180→  );
+   181→}
+   182→
+   183→// ------------------------------------------------------------
+   184→// Skema form transaksi (string-based; konversi saat submit)
+   185→// ------------------------------------------------------------
+   186→const numberString = (label: string) =>
+   187→  z
+   188→    .string()
+   189→    .min(1, `${label} wajib diisi`)
+   190→    .refine((v) => !Number.isNaN(Number(v)), `${label} harus berupa angka`)
+   191→    .refine((v) => Number(v) >= 0, `${label} tidak boleh negatif`);
+   192→
+   193→const txFormSchema = z.object({
+   194→  assetId: z.string().min(1, "Pilih aset"),
+   195→  type: z.string().min(1, "Pilih jenis transaksi"),
+   196→  quantity: numberString("Jumlah"),
+   197→  price: numberString("Harga"),
+   198→  fee: z
+   199→    .string()
+   200→    .refine((v) => v === "" || !Number.isNaN(Number(v)), "Fee harus berupa angka")
+   201→    .refine((v) => v === "" || Number(v) >= 0, "Fee tidak boleh negatif"),
+   202→  at: z
+   203→    .string()
+   204→    .refine((v) => v === "" || !Number.isNaN(new Date(v).getTime()), "Tanggal tidak valid"),
+   205→  note: z.string().max(1000, "Catatan maksimal 1000 karakter"),
+   206→});
+   207→type TxFormValues = z.infer<typeof txFormSchema>;
+   208→
+   209→const EMPTY_TX_FORM: TxFormValues = {
+   210→  assetId: "",
+   211→  type: "",
+   212→  quantity: "",
+   213→  price: "",
+   214→  fee: "",
+   215→  at: "",
+   216→  note: "",
+   217→};
+   218→
+   219→// ------------------------------------------------------------
+   220→// Dialog Catat Transaksi
+   221→// ------------------------------------------------------------
+   222→function TxFormDialog({
+   223→  open,
+   224→  onOpenChange,
+   225→  assets,
+   226→}: {
+   227→  open: boolean;
+   228→  onOpenChange: (v: boolean) => void;
+   229→  assets: Asset[];
+   230→}) {
+   231→  const queryClient = useQueryClient();
+   232→  const form = useForm<TxFormValues>({
+   233→    resolver: zodResolver(txFormSchema),
+   234→    defaultValues: { ...EMPTY_TX_FORM, at: nowLocalInput() },
+   235→  });
+   236→
+   237→  const typeWatch = useWatch({ control: form.control, name: "type", defaultValue: "" });
+   238→  const assetIdWatch = useWatch({ control: form.control, name: "assetId", defaultValue: "" });
+   239→  const type = (typeWatch ?? "") as TransactionType | "";
+   240→  const selectedAsset = assets.find((a) => String(a.id) === assetIdWatch) ?? null;
+   241→
+   242→  React.useEffect(() => {
+   243→    if (!open) return;
+   244→    form.reset({ ...EMPTY_TX_FORM, at: nowLocalInput() });
+   245→  }, [open, form]);
+   246→
+   247→  const createMutation = useMutation({
+   248→    mutationFn: (values: TxFormValues) => {
+   249→      const body: Record<string, unknown> = {
+   250→        assetId: Number(values.assetId),
+   251→        type: values.type,
+   252→        quantity: Number(values.quantity),
+   253→        price: Number(values.price),
+   254→        fee: values.fee === "" ? 0 : Number(values.fee),
+   255→        note: values.note.trim(),
+   256→      };
+   257→      if (values.at) {
+   258→        const d = new Date(values.at);
+   259→        if (!Number.isNaN(d.getTime())) body.at = d.toISOString();
+   260→      }
+   261→      return apiFetch<Transaction>("/transactions", { method: "POST", body });
+   262→    },
+   263→    onSuccess: (tx) => {
+   264→      toast.success("Transaksi berhasil dicatat", {
+   265→        description: `${txMeta(tx.type).label} · ${tx.assetName ?? "aset"} · ${formatNumber(tx.quantity, 6)}`,
+   266→      });
+   267→      void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+   268→      void queryClient.invalidateQueries({ queryKey: ["assets"] });
+   269→      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+   270→      onOpenChange(false);
+   271→    },
+   272→    onError: (err) => {
+   273→      toast.error("Gagal mencatat transaksi", { description: errMsg(err) });
+   274→    },
+   275→  });
+   276→
+   277→  const onSubmit = form.handleSubmit((values) => {
+   278→    // Validasi client-side terkait tipe & ketersediaan aset
+   279→    const t = values.type as TransactionType;
+   280→    const qty = Number(values.quantity);
+   281→    if (["buy", "sell", "transfer_in", "transfer_out"].includes(t) && qty <= 0) {
+   282→      form.setError("quantity", { message: "Jumlah harus lebih dari 0 untuk jenis transaksi ini" });
+   283→      return;
+   284→    }
+   285→    if (t === "sell" || t === "transfer_out") {
+   286→      const asset = assets.find((a) => String(a.id) === values.assetId);
+   287→      if (asset && qty > asset.quantity + 1e-9) {
+   288→        form.setError("quantity", {
+   289→          message: `Melebihi jumlah tersedia (${formatNumber(asset.quantity, 6)})`,
+   290→        });
+   291→        return;
+   292→      }
+   293→    }
+   294→    createMutation.mutate(values);
+   295→  });
+   296→
+   297→  const needsPositiveQty =
+   298→    type === "buy" || type === "sell" || type === "transfer_in" || type === "transfer_out";
+   299→
+   300→  return (
+   301→    <Dialog open={open} onOpenChange={onOpenChange}>
+   302→      <DialogContent className="max-h-[90vh] overflow-y-auto scrollbar-thin sm:max-w-lg">
+   303→        <DialogHeader>
+   304→          <DialogTitle>Catat Transaksi</DialogTitle>
+   305→          <DialogDescription>
+   306→            Beli/jual otomatis menyesuaikan jumlah aset. Harga &amp; fee mengikuti mata uang aset.
+   307→          </DialogDescription>
+   308→        </DialogHeader>
+   309→
+   310→        <form onSubmit={onSubmit} className="grid gap-4" noValidate>
+   311→          <div className="grid gap-1.5">
+   312→            <Label>Aset *</Label>
+   313→            <Controller
+   314→              control={form.control}
+   315→              name="assetId"
+   316→              render={({ field }) => (
+   317→                <Select value={field.value} onValueChange={field.onChange}>
+   318→                  <SelectTrigger className="w-full">
+   319→                    <SelectValue placeholder="Pilih aset" />
+   320→                  </SelectTrigger>
+   321→                  <SelectContent className="max-h-64">
+   322→                    {assets.length === 0 ? (
+   323→                      <div className="px-3 py-2 text-sm text-muted-foreground">
+   324→                        Belum ada aset — tambahkan aset terlebih dahulu
+   325→                      </div>
+   326→                    ) : (
+   327→                      assets.map((a) => (
+   328→                        <SelectItem key={String(a.id)} value={String(a.id)}>
+   329→                          {a.name}
+   330→                          {a.symbol ? ` (${a.symbol})` : ""}
+   331→                        </SelectItem>
+   332→                      ))
+   333→                    )}
+   334→                  </SelectContent>
+   335→                </Select>
+   336→              )}
+   337→            />
+   338→            {selectedAsset && (
+   339→              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+   340→                <ClassBadge assetClass={selectedAsset.assetClass} className="px-1.5 text-[10px]" />
+   341→                <span>
+   342→                  Mata uang: <span className="font-medium">{selectedAsset.currency}</span>
+   343→                </span>
+   344→                <span>
+   345→                  Tersedia:{" "}
+   346→                  <span className="font-medium tabular-nums">
+   347→                    {formatNumber(selectedAsset.quantity, 6)}
+   348→                    {selectedAsset.symbol ? ` ${selectedAsset.symbol}` : ""}
+   349→                  </span>
+   350→                </span>
+   351→              </div>
+   352→            )}
+   353→            <FieldError message={form.formState.errors.assetId?.message} />
+   354→          </div>
+   355→
+   356→          <div className="grid gap-1.5">
+   357→            <Label>Jenis Transaksi *</Label>
+   358→            <Controller
+   359→              control={form.control}
+   360→              name="type"
+   361→              render={({ field }) => (
+   362→                <Select value={field.value} onValueChange={field.onChange}>
+   363→                  <SelectTrigger className="w-full">
+   364→                    <SelectValue placeholder="Pilih jenis" />
+   365→                  </SelectTrigger>
+   366→                  <SelectContent>
+   367→                    {TX_TYPE_OPTIONS.map((t) => (
+   368→                      <SelectItem key={t.value} value={t.value}>
+   369→                        {t.label}
+   370→                      </SelectItem>
+   371→                    ))}
+   372→                  </SelectContent>
+   373→                </Select>
+   374→              )}
+   375→            />
+   376→            {type === "valuation_update" && (
+   377→              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+   378→                <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+   379→                Harga baru akan diterapkan sebagai harga satuan aset.
+   380→              </p>
+   381→            )}
+   382→            <FieldError message={form.formState.errors.type?.message} />
+   383→          </div>
+   384→
+   385→          <div className="grid gap-4 sm:grid-cols-2">
+   386→            <div className="grid gap-1.5">
+   387→              <Label htmlFor="tx-quantity">Jumlah *</Label>
+   388→              <Input
+   389→                id="tx-quantity"
+   390→                type="number"
+   391→                step="any"
+   392→                min="0"
+   393→                inputMode="decimal"
+   394→                placeholder={needsPositiveQty ? "cth. 0.25" : "cth. 0"}
+   395→                {...form.register("quantity")}
+   396→              />
+   397→              <FieldError message={form.formState.errors.quantity?.message} />
+   398→            </div>
+   399→
+   400→            <div className="grid gap-1.5">
+   401→              <div className="flex items-center justify-between gap-2">
+   402→                <Label htmlFor="tx-price">Harga Satuan *</Label>
+   403→                {selectedAsset && (
+   404→                  <span className="rounded-md border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+   405→                    {selectedAsset.currency}
+   406→                  </span>
+   407→                )}
+   408→              </div>
+   409→              <Input
+   410→                id="tx-price"
+   411→                type="number"
+   412→                step="any"
+   413→                min="0"
+   414→                inputMode="decimal"
+   415→                placeholder="cth. 65000"
+   416→                {...form.register("price")}
+   417→              />
+   418→              <FieldError message={form.formState.errors.price?.message} />
+   419→            </div>
+   420→          </div>
+   421→
+   422→          <div className="grid gap-4 sm:grid-cols-2">
+   423→            <div className="grid gap-1.5">
+   424→              <Label htmlFor="tx-fee">Fee</Label>
+   425→              <Input
+   426→                id="tx-fee"
+   427→                type="number"
+   428→                step="any"
+   429→                min="0"
+   430→                inputMode="decimal"
+   431→                placeholder="cth. 1.5 (opsional)"
+   432→                {...form.register("fee")}
+   433→              />
+   434→              <FieldError message={form.formState.errors.fee?.message} />
+   435→            </div>
+   436→
+   437→            <div className="grid gap-1.5">
+   438→              <Label htmlFor="tx-at">Tanggal &amp; Jam</Label>
+   439→              <Input id="tx-at" type="datetime-local" {...form.register("at")} />
+   440→              <FieldError message={form.formState.errors.at?.message} />
+   441→            </div>
+   442→          </div>
+   443→
+   444→          <div className="grid gap-1.5">
+   445→            <Label htmlFor="tx-note">Catatan</Label>
+   446→            <Textarea
+   447→              id="tx-note"
+   448→              rows={3}
+   449→              placeholder="cth. DCA mingguan via Binance (opsional)"
+   450→              {...form.register("note")}
+   451→            />
+   452→            <FieldError message={form.formState.errors.note?.message} />
+   453→          </div>
+   454→
+   455→          <DialogFooter className="gap-2 sm:gap-0">
+   456→            <Button
+   457→              type="button"
+   458→              variant="outline"
+   459→              onClick={() => onOpenChange(false)}
+   460→              disabled={createMutation.isPending}
+   461→            >
+   462→              Batal
+   463→            </Button>
+   464→            <Button
+   465→              type="submit"
+   466→              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+   467→              disabled={createMutation.isPending || assets.length === 0}
+   468→            >
+   469→              {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+   470→              Simpan Transaksi
+   471→            </Button>
+   472→          </DialogFooter>
+   473→        </form>
+   474→      </DialogContent>
+   475→    </Dialog>
+   476→  );
+   477→}
+   478→
+   479→// ------------------------------------------------------------
+   480→// TransactionsView
+   481→// ------------------------------------------------------------
+   482→export default function TransactionsView() {
+   483→  const user = useAppStore((s) => s.user);
+   484→  const isOwner = user?.role === "owner";
+   485→  // Ekspor CSV: owner & advisor (S-b)
+   486→  const canExportCsv = user?.role === "owner" || user?.role === "advisor";
+   487→  const formatCurrency = useFormatCurrency();
+   488→
+   489→  // ---------- filter state ----------
+   490→  const [typeFilter, setTypeFilter] = React.useState("all");
+   491→  const [assetFilter, setAssetFilter] = React.useState("all");
+   492→  const [formOpen, setFormOpen] = React.useState(false);
+   493→
+   494→  // ---------- Ekspor CSV (Task S-b) ----------
+   495→  const exportCsvM = useMutation({
+   496→    mutationFn: async () => {
+   497→      const blob = await apiGetBlob("/transactions/export.csv");
+   498→      const now = new Date();
+   499→      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+   500→        now.getDate(),
+   501→      ).padStart(2, "0")}`;
+   502→      const url = URL.createObjectURL(blob);
+   503→      const a = document.createElement("a");
+   504→      a.href = url;
+   505→      a.download = `transaksi-${stamp}.csv`;
+   506→      document.body.appendChild(a);
+   507→      a.click();
+   508→      a.remove();
+   509→      URL.revokeObjectURL(url);
+   510→      return blob.size;
+   511→    },
+   512→    onSuccess: (size) =>
+   513→      toast.success("Ekspor CSV berhasil diunduh", {
+   514→        description: `transaksi-*.csv · ${(size / 1024).toFixed(1)} KB`,
+   515→      }),
+   516→    onError: (e) =>
+   517→      toast.error("Gagal mengekspor CSV", {
+   518→        description: e instanceof ApiError ? e.message : "Backend belum terjangkau — mencoba lagi",
+   519→      }),
+   520→  });
+   521→
+   522→  // ---------- queries ----------
+   523→  const assetsQuery = useQuery<Asset[], ApiError>({
+   524→    queryKey: ["assets", "options"],
+   525→    queryFn: () => apiFetch<Asset[]>("/assets"),
+   526→    staleTime: 30_000,
+   527→  });
+   528→  const assets = assetsQuery.data ?? [];
+   529→
+   530→  const txParams = {
+   531→    assetId: assetFilter !== "all" ? assetFilter : undefined,
+   532→    type: typeFilter !== "all" ? typeFilter : undefined,
+   533→    limit: 200,
+   534→  };
+   535→  const txQuery = useQuery<Transaction[], ApiError>({
+   536→    queryKey: ["transactions", { assetId: txParams.assetId ?? null, type: txParams.type ?? null }],
+   537→    queryFn: () =>
+   538→      apiFetch<Transaction[]>("/transactions", {
+   539→        params: { assetId: txParams.assetId, type: txParams.type, limit: 200 },
+   540→      }),
+   541→    staleTime: 30_000,
+   542→  });
+   543→
+   544→  const txs = React.useMemo(() => {
+   545→    const rows = txQuery.data ?? [];
+   546→    return [...rows].sort((a, b) => {
+   547→      const d = (b.at ?? "").localeCompare(a.at ?? "");
+   548→      return d !== 0 ? d : String(b.id).localeCompare(String(a.id));
+   549→    });
+   550→  }, [txQuery.data]);
+   551→
+   552→  const stats = React.useMemo(() => {
+   553→    let inflow = 0;
+   554→    let outflow = 0;
+   555→    for (const tx of txs) {
+   556→      if (INFLOW_TYPES.includes(tx.type)) inflow += Math.abs(tx.totalUsd ?? 0);
+   557→      else if (OUTFLOW_TYPES.includes(tx.type)) outflow += Math.abs(tx.totalUsd ?? 0);
+   558→    }
+   559→    return { inflow, outflow, count: txs.length };
+   560→  }, [txs]);
+   561→
+   562→  return (
+   563→    <div className="space-y-6">
+   564→      <PageHeader
+   565→        title="Transaksi"
+   566→        subtitle="Riwayat buy/sell, transfer, income/expense, dan valuation update."
+   567→      />
+   568→
+   569→      {/* ================= StatCards arus kas ================= */}
+   570→      <div className="grid gap-4 sm:grid-cols-3" aria-busy={txQuery.isPending && txs.length === 0}>
+   571→        <StatCard
+   572→          loading={txQuery.isPending && txs.length === 0}
+   573→          label="Total Masuk"
+   574→          value={formatCurrency(stats.inflow)}
+   575→          sub="beli · transfer masuk · pemasukan"
+   576→          icon={<ArrowDownLeft className="h-5 w-5" />}
+   577→        />
+   578→        <StatCard
+   579→          loading={txQuery.isPending && txs.length === 0}
+   580→          label="Total Keluar"
+   581→          value={formatCurrency(stats.outflow)}
+   582→          sub="jual, transfer keluar, pengeluaran"
+   583→          accent="rose"
+   584→          icon={<ArrowUpRight className="h-5 w-5" />}
+   585→        />
+   586→        <StatCard
+   587→          loading={txQuery.isPending && txs.length === 0}
+   588→          label="Jumlah Transaksi"
+   589→          value={String(stats.count)}
+   590→          sub={`hingga ${txParams.limit} terakhir terfilter`}
+   591→          accent="amber"
+   592→          icon={<ArrowLeftRight className="h-5 w-5" />}
+   593→        />
+   594→      </div>
+   595→
+   596→      {/* ================= Toolbar ================= */}
+   597→      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+   598→        <div className="flex flex-wrap items-center gap-3">
+   599→          <Select value={typeFilter} onValueChange={setTypeFilter}>
+   600→            <SelectTrigger className="w-full sm:w-[190px]" aria-label="Filter jenis transaksi">
+   601→              <SelectValue placeholder="Semua Jenis" />
+   602→            </SelectTrigger>
+   603→            <SelectContent>
+   604→              <SelectItem value="all">Semua Jenis</SelectItem>
+   605→              {TX_TYPE_OPTIONS.map((t) => (
+   606→                <SelectItem key={t.value} value={t.value}>
+   607→                  {t.label}
+   608→                </SelectItem>
+   609→              ))}
+   610→            </SelectContent>
+   611→          </Select>
+   612→
+   613→          <Select value={assetFilter} onValueChange={setAssetFilter}>
+   614→            <SelectTrigger className="w-full sm:w-[230px]" aria-label="Filter aset">
+   615→              <SelectValue placeholder="Semua Aset" />
+   616→            </SelectTrigger>
+   617→            <SelectContent className="max-h-64">
+   618→              <SelectItem value="all">Semua Aset</SelectItem>
+   619→              {assets.map((a) => (
+   620→                <SelectItem key={String(a.id)} value={String(a.id)}>
+   621→                  {a.name}
+   622→                  {a.symbol ? ` (${a.symbol})` : ""}
+   623→                </SelectItem>
+   624→              ))}
+   625→            </SelectContent>
+   626→          </Select>
+   627→        </div>
+   628→
+   629→        {(isOwner || canExportCsv) && (
+   630→          <div className="flex flex-wrap items-center gap-2">
+   631→            {canExportCsv && (
+   632→              <Button
+   633→                type="button"
+   634→                variant="outline"
+   635→                className="min-h-[40px]"
+   636→                onClick={() => exportCsvM.mutate()}
+   637→                disabled={exportCsvM.isPending}
+   638→                title="Unduh seluruh riwayat transaksi sebagai file CSV"
+   639→              >
+   640→                {exportCsvM.isPending ? (
+   641→                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   642→                ) : (
+   643→                  <Download className="h-4 w-4" aria-hidden="true" />
+   644→                )}
+   645→                Ekspor CSV
+   646→              </Button>
+   647→            )}
+   648→            {isOwner && (
+   649→              <Button
+   650→                type="button"
+   651→                onClick={() => setFormOpen(true)}
+   652→                className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+   653→              >
+   654→                <Plus className="h-4 w-4" aria-hidden="true" />
+   655→                Catat Transaksi
+   656→              </Button>
+   657→            )}
+   658→          </div>
+   659→        )}
+   660→      </div>
+   661→
+   662→      {/* ================= Tabel Transaksi ================= */}
+   663→      <SectionCard
+   664→        title="Riwayat Transaksi"
+   665→        description={
+   666→          txQuery.isPending
+   667→            ? "Memuat data…"
+   668→            : `${txs.length} transaksi ditampilkan${typeFilter !== "all" || assetFilter !== "all" ? " (terfilter)" : ""}`
+   669→        }
+   670→        contentClassName="px-0 pb-0"
+   671→      >
+   672→        {txQuery.isError && txs.length === 0 ? (
+   673→          <div className="px-6 pb-6">
+   674→            <ErrorBox message={errMsg(txQuery.error)} onRetry={() => void txQuery.refetch()} />
+   675→          </div>
+   676→        ) : txQuery.isPending && txs.length === 0 ? (
+   677→          <div className="px-6 pb-6">
+   678→            <LoadingRows rows={6} />
+   679→          </div>
+   680→        ) : txs.length === 0 ? (
+   681→          <div className="px-6 pb-6">
+   682→            <EmptyState
+   683→              icon={<ArrowLeftRight className="h-6 w-6" />}
+   684→              title="Belum ada transaksi"
+   685→              description={
+   686→                typeFilter !== "all" || assetFilter !== "all"
+   687→                  ? "Tidak ada transaksi yang cocok dengan filter. Coba ubah kriteria."
+   688→                  : isOwner
+   689→                    ? "Catat transaksi pertama — beli, jual, transfer, atau pencatatan nilai."
+   690→                    : "Owner belum mencatat transaksi. Riwayat akan tampil di sini."
+   691→              }
+   692→              action={
+   693→                isOwner && typeFilter === "all" && assetFilter === "all" ? (
+   694→                  <Button
+   695→                    type="button"
+   696→                    onClick={() => setFormOpen(true)}
+   697→                    className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+   698→                  >
+   699→                    <Plus className="h-4 w-4" aria-hidden="true" />
+   700→                    Catat Transaksi
+   701→                  </Button>
+   702→                ) : undefined
+   703→              }
+   704→            />
+   705→          </div>
+   706→        ) : (
+   707→          <TooltipProvider delayDuration={200}>
+   708→            <div className="max-h-96 overflow-auto scrollbar-thin">
+   709→              <Table>
+   710→                <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+   711→                  <TableRow className="hover:bg-transparent">
+   712→                    <TableHead className="min-w-[150px]">Tanggal</TableHead>
+   713→                    <TableHead className="w-[150px]">Tipe</TableHead>
+   714→                    <TableHead className="min-w-[160px]">Aset</TableHead>
+   715→                    <TableHead className="w-[110px] text-right">Jumlah</TableHead>
+   716→                    <TableHead className="w-[110px] text-right">Harga</TableHead>
+   717→                    <TableHead className="w-[130px] text-right">Total</TableHead>
+   718→                    <TableHead className="w-[100px] text-right">Fee</TableHead>
+   719→                    <TableHead className="min-w-[140px]">Catatan</TableHead>
+   720→                  </TableRow>
+   721→                </TableHeader>
+   722→                <TableBody>
+   723→                  {txs.map((tx) => {
+   724→                    const meta = txMeta(tx.type);
+   725→                    const inflow = meta.dir === "in";
+   726→                    const neutral = meta.dir === "neutral";
+   727→                    const DirIcon = meta.icon;
+   728→                    return (
+   729→                      <TableRow key={String(tx.id)}>
+   730→                        <TableCell>
+   731→                          <div className="flex flex-col">
+   732→                            <span className="whitespace-nowrap text-sm tabular-nums">
+   733→                              {formatDate(tx.at)}
+   734→                            </span>
+   735→                            <span className="text-xs text-muted-foreground">{timeAgo(tx.at)}</span>
+   736→                          </div>
+   737→                        </TableCell>
+   738→                        <TableCell>
+   739→                          <span className="inline-flex items-center gap-1.5">
+   740→                            <DirIcon
+   741→                              className={cn(
+   742→                                "h-3.5 w-3.5",
+   743→                                neutral && "text-zinc-500",
+   744→                                !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+   745→                                !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+   746→                              )}
+   747→                              aria-hidden="true"
+   748→                            />
+   749→                            <TypeBadge type={tx.type} />
+   750→                          </span>
+   751→                        </TableCell>
+   752→                        <TableCell className="font-medium">{tx.assetName ?? `#${tx.assetId}`}</TableCell>
+   753→                        <TableCell className="text-right tabular-nums">
+   754→                          {formatNumber(tx.quantity, 6)}
+   755→                        </TableCell>
+   756→                        <TableCell className="text-right">
+   757→                          <MoneyCell usd={tx.priceUsd} />
+   758→                        </TableCell>
+   759→                        <TableCell
+   760→                          className={cn(
+   761→                            "text-right font-semibold tabular-nums",
+   762→                            neutral && "text-muted-foreground",
+   763→                            !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+   764→                            !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+   765→                          )}
+   766→                        >
+   767→                          <MoneyCell
+   768→                            usd={tx.totalUsd}
+   769→                            sign={neutral ? undefined : inflow ? "+" : "−"}
+   770→                            className={cn(
+   771→                              "font-semibold",
+   772→                              neutral && "text-muted-foreground",
+   773→                              !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+   774→                              !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+   775→                            )}
+   776→                          />
+   777→                        </TableCell>
+   778→                        <TableCell className="text-right">
+   779→                          {tx.feeUsd > 0 ? (
+   780→                            <MoneyCell usd={tx.feeUsd} className="text-muted-foreground" />
+   781→                          ) : (
+   782→                            <span className="text-muted-foreground">—</span>
+   783→                          )}
+   784→                        </TableCell>
+   785→                        <TableCell>
+   786→                          {tx.note?.trim() ? (
+   787→                            <Tooltip>
+   788→                              <TooltipTrigger asChild>
+   789→                                <span className="block max-w-[220px] cursor-default truncate text-sm text-muted-foreground">
+   790→                                  {tx.note}
+   791→                                </span>
+   792→                              </TooltipTrigger>
+   793→                              <TooltipContent side="top" className="max-w-xs">
+   794→                                <p className="text-xs">{tx.note}</p>
+   795→                              </TooltipContent>
+   796→                            </Tooltip>
+   797→                          ) : (
+   798→                            <span className="text-muted-foreground">—</span>
+   799→                          )}
+   800→                        </TableCell>
+   801→                      </TableRow>
+   802→                    );
+   803→                  })}
+   804→                </TableBody>
+   805→              </Table>
+   806→            </div>
+   807→          </TooltipProvider>
+   808→        )}
+   809→      </SectionCard>
+   810→
+   811→      {txs.length > 0 && (
+   812→        <p className="text-xs text-muted-foreground">
+   813→          Nilai ditampilkan dalam mata uang tampilan pilihan Anda. Total masuk/keluar dihitung dari
+   814→          tipe: masuk (beli, transfer masuk, pemasukan) dan keluar (jual, transfer keluar, pengeluaran).
+   815→        </p>
+   816→      )}
+   817→
+   818→      {/* ================= Dialog ================= */}
+   819→      {isOwner && (
+   820→        <TxFormDialog open={formOpen} onOpenChange={setFormOpen} assets={assets} />
+   821→      )}
+   822→    </div>
+   823→  );
+   824→}
+   825→

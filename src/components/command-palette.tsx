@@ -4,7 +4,8 @@
 // Family Office — Mr.Z · Command Palette (global)
 // Cmd+K / Ctrl+K atau tombol ikon pencarian di topbar.
 // - Navigasi cepat ke 11 view (NAV_ITEMS) — fuzzy substring via cmdk
-// - Tindakan cepat: toggle tema (next-themes), Keluar, Perdagangan cepat BTC
+// - Tindakan cepat: toggle tema, Keluar, Perdagangan cepat BTC,
+//   Catat Transaksi, Laporan Kinerja, Backup Database (owner-only, ronde 7)
 // - Keyboard: ↑/↓ pindah, Enter pilih, Esc tutup (CommandDialog shadcn)
 // ============================================================
 import * as React from "react";
@@ -21,7 +22,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { Moon, Sun, LogOut, Zap } from "lucide-react";
+import { Moon, Sun, LogOut, Zap, Plus, FileText, DatabaseBackup } from "lucide-react";
 
 export default function CommandPalette({
   open,
@@ -32,6 +33,8 @@ export default function CommandPalette({
 }) {
   const setActiveView = useAppStore((s) => s.setActiveView);
   const clearAuth = useAppStore((s) => s.clearAuth);
+  const user = useAppStore((s) => s.user);
+  const isOwner = user?.role === "owner";
   const { theme, setTheme } = useTheme();
   const isDark = theme === "dark";
 
@@ -123,6 +126,38 @@ export default function CommandPalette({
             <span>Perdagangan cepat BTC</span>
             <span className="ml-auto text-xs text-muted-foreground">Pasar</span>
           </CommandItem>
+
+          <CommandItem
+            value="Catat transaksi baru"
+            keywords={["transaksi", "catat", "beli", "jual", "transfer", "pemasukan", "pengeluaran", "record"]}
+            onSelect={() => goView("transactions")}
+          >
+            <Plus className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            <span>Catat transaksi baru</span>
+            <span className="ml-auto text-xs text-muted-foreground">Transaksi</span>
+          </CommandItem>
+
+          <CommandItem
+            value="Laporan kinerja & cetak PDF"
+            keywords={["laporan", "kinerja", "report", "pdf", "cetak", "print", "benchmark"]}
+            onSelect={() => goView("portfolio")}
+          >
+            <FileText className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            <span>Laporan kinerja &amp; cetak PDF</span>
+            <span className="ml-auto text-xs text-muted-foreground">Portofolio</span>
+          </CommandItem>
+
+          {isOwner && (
+            <CommandItem
+              value="Backup database"
+              keywords={["backup", "database", "cadangan", "snapshot", "restore", "sqlite"]}
+              onSelect={() => goView("settings")}
+            >
+              <DatabaseBackup className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <span>Backup database</span>
+              <span className="ml-auto text-xs text-muted-foreground">Pengaturan</span>
+            </CommandItem>
+          )}
 
           <CommandItem
             value="Keluar"

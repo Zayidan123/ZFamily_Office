@@ -1,12 +1,17 @@
 """Auth, system (status/panic), rates publik, settings, admin export."""
+import os
+import re
+import sqlite3
 import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from db import (execute, get_conn, get_setting, guard_mutation, is_panic, now_iso,
-                query, query_one, set_setting, write_audit)
+from db import (DB_PATH, execute, get_conn, get_setting, guard_mutation, is_panic,
+                now_iso, query, query_one, set_setting, write_audit)
 from errors import ApiError, ok
 from mfa import gen_secret, otpauth_url, verify_totp
 from prices import get_rates
@@ -17,6 +22,11 @@ router = APIRouter(tags=["auth-system"])
 VERSION = "1.6.0"  # selaraskan dengan VERSION di main.py
 ALLOWED_CURRENCIES = {"USD", "IDR"}
 ALLOWED_TARGET_KEYS = {"crypto", "stocks", "forexGold", "property", "cash"}
+
+# Backup database (ronde 7): snapshot konsisten via sqlite backup API.
+BACKUP_DIR = "/home/z/my-project/db/backups"
+BACKUP_MAX_KEEP = 20
+_BACKUP_NAME_RE = re.compile(r"^family_office-\d{8}-\d{6}\.db$")
 
 # Rate-limit MFA: max percobaan verify GAGAL per challengeToken (in-memory).
 _MFA_FAILS: dict = {}
@@ -205,6 +215,100 @@ def system_status():
         return ok({"panicMode": is_panic(conn), "version": VERSION, "serverTime": now_iso()})
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------ Backup database (ronde 7)
+
+def _backup_list() -> list:
+    """Daftar file backup (*.db) terbaru dulu — read-only, tanpa DB."""
+    if not os.path.isdir(BACKUP_DIR):
+        return []
+    items = []
+    for fn in os.listdir(BACKUP_DIR):
+        if not fn.endswith(".db"):
+            continue
+        p = os.path.join(BACKUP_DIR, fn)
+        if not os.path.isfile(p):
+            continue
+        items.append({
+            "name": fn,
+            "sizeBytes": os.path.getsize(p),
+            "createdAt": datetime.fromtimestamp(
+                os.path.getmtime(p), tz=timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+    items.sort(key=lambda x: x["name"], reverse=True)
+    return items
+
+
+def _prune_backups() -> int:
+    """Buang backup tertua melebihi BACKUP_MAX_KEEP. Return jumlah terhapus."""
+    files = sorted(
+        (f for f in os.listdir(BACKUP_DIR) if f.endswith(".db")),
+        reverse=True,   # nama memuat timestamp → sort desc = terbaru dulu
+    )
+    removed = 0
+    for old in files[BACKUP_MAX_KEEP:]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old))
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+@router.get("/system/backups")
+def list_backups(user: dict = Depends(require_auth("owner"))):
+    """Daftar backup database (owner-only, read-only — tanpa panic guard)."""
+    return ok({"backups": _backup_list(), "maxKeep": BACKUP_MAX_KEEP})
+
+
+@router.post("/system/backup")
+def create_backup(user: dict = Depends(require_auth("owner"))):
+    """Buat snapshot SQLite konsisten (sqlite backup API) — owner-only, panic-guarded."""
+    conn = get_conn()
+    try:
+        guard_mutation(conn)
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        name = f"family_office-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.db"
+        dest = os.path.join(BACKUP_DIR, name)
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)   # snapshot konsisten walau ada koneksi lain menulis
+        finally:
+            dst.close()
+            src.close()
+        removed = _prune_backups()
+        write_audit(conn, user, "system.backup", "system",
+                    f"Backup database dibuat: {name} ({os.path.getsize(dest)} bytes)")
+        backups = _backup_list()
+        return ok({
+            "name": name,
+            "sizeBytes": os.path.getsize(dest),
+            "totalBackups": len(backups),
+            "pruned": removed,
+            "backups": backups,
+        })
+    finally:
+        conn.close()
+
+
+@router.get("/system/backups/{name}/download")
+def download_backup(name: str, user: dict = Depends(require_auth("owner"))):
+    """Unduh file backup (owner-only, read-only). Nama divalidasi ketat (anti path-traversal)."""
+    if not _BACKUP_NAME_RE.match(name):
+        raise ApiError(400, "Nama backup tidak valid")
+    path = os.path.join(BACKUP_DIR, name)
+    if not os.path.isfile(path):
+        raise ApiError(404, "Backup tidak ditemukan")
+    conn = get_conn()
+    try:
+        write_audit(conn, user, "system.backup_download", "system", f"Unduh backup: {name}")
+    finally:
+        conn.close()
+    return FileResponse(path, media_type="application/octet-stream", filename=name)
 
 
 @router.post("/system/panic")
