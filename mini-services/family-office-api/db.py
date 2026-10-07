@@ -331,6 +331,18 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   at             TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_paper_at ON paper_trades(at);
+
+CREATE TABLE IF NOT EXISTS price_alerts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol      TEXT NOT NULL,
+  direction   TEXT NOT NULL CHECK(direction IN ('above','below')),
+  threshold   REAL NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','triggered','dismissed')),
+  note        TEXT,
+  createdAt   TEXT,
+  triggeredAt TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_status ON price_alerts(status);
 """
 
 # Kolom MFA (PRD #42) — ditambahkan via ALTER TABLE agar aman untuk DB existing.

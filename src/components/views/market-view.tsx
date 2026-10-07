@@ -1,22 +1,26 @@
 "use client";
 
 // ============================================================
-// Pasar — watchlist simbol & harga live
+// Pasar — watchlist simbol & harga live + alert harga + konverter
 // GET /market/watchlist (30s) · GET /market/symbols · GET /market/history
+// GET /market/alerts (30s, lazy-eval) + POST /market/alerts + dismiss/delete
+// Konverter mata uang via pivot USD (useRates: USDIDR + prices[].usd)
 // Sparkline mini (SVG) + dialog detail (AreaChart 7/30/90 hari)
-// RBAC: owner CRUD, lainnya read-only
+// RBAC: owner CRUD (watchlist & alert), lainnya read-only, executor tanpa alert
 // ============================================================
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAppStore } from "@/lib/store";
-import { formatDate, formatPct } from "@/lib/format";
+import { formatDate, formatIdr, formatPct, formatUsd, timeAgo } from "@/lib/format";
 import {
   StatCard,
   PageHeader,
+  SectionCard,
   EmptyState,
   ErrorBox,
+  LoadingRows,
   CurrencyText,
   useFormatCurrency,
   useRates,
@@ -63,6 +67,8 @@ import {
   TrendingDown,
   Coins,
   StickyNote,
+  Bell,
+  ArrowLeftRight,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -96,6 +102,26 @@ interface MarketHistory {
   symbol: string;
   days: number;
   points: MarketHistoryPoint[];
+}
+
+// Kontrak T-a — /market/alerts (server lazy-evaluasi saat GET)
+interface PriceAlert {
+  id: number;
+  symbol: string;
+  direction: "above" | "below";
+  threshold: number;
+  status: "active" | "triggered" | "dismissed";
+  note: string | null;
+  createdAt: string;
+  triggeredAt: string | null;
+  currentPrice: number;
+  /** Ekstra dari backend T-a: satuan threshold/currentPrice (BBCA seed = IDR) */
+  quote?: "USD" | "IDR";
+}
+
+interface MarketAlertsResponse {
+  alerts: PriceAlert[];
+  triggeredCount: number;
 }
 
 // ------------------------------------------------------------
@@ -407,7 +433,10 @@ function WatchDetailDialog({
                         border: "1px solid var(--border)",
                         borderRadius: 12,
                         fontSize: 12,
+                        color: "var(--popover-foreground)",
                       }}
+                      labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                      itemStyle={{ color: "var(--popover-foreground)" }}
                       formatter={(value) => [formatCurrency(Number(value)), "Harga"]}
                     />
                     <Area
@@ -567,12 +596,667 @@ function AddWatchDialog({
 }
 
 // ------------------------------------------------------------
+// Progress mini alert — % jarak harga kini menuju threshold (clamp 0-100)
+// above: current/threshold · below: threshold/current · triggered = 100
+// ------------------------------------------------------------
+function alertProgressPct(alert: PriceAlert): number {
+  if (alert.status === "triggered") return 100;
+  const cur = alert.currentPrice;
+  const th = alert.threshold;
+  if (!Number.isFinite(cur) || !Number.isFinite(th) || cur <= 0 || th <= 0) return 0;
+  const raw = alert.direction === "above" ? (cur / th) * 100 : (th / cur) * 100;
+  return Math.min(100, Math.max(0, raw));
+}
+
+const ALERT_STATUS_META: Record<
+  PriceAlert["status"],
+  { label: string; className: string }
+> = {
+  active: {
+    label: "Aktif",
+    className: "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+  },
+  triggered: {
+    label: "Terpicu",
+    className: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400 animate-pulse",
+  },
+  dismissed: {
+    label: "Diabaikan",
+    className: "border-zinc-500/30 bg-zinc-500/5 text-zinc-400 dark:text-zinc-500",
+  },
+};
+
+function AlertStatusBadge({ status }: { status: PriceAlert["status"] }) {
+  const meta = ALERT_STATUS_META[status] ?? ALERT_STATUS_META.active;
+  return (
+    <Badge variant="outline" className={cn("shrink-0 text-[10px]", meta.className)}>
+      {meta.label}
+    </Badge>
+  );
+}
+
+/** Harga alert aware-quote: quote "IDR" dirender langsung Rp, selain itu via CurrencyText (USD display). */
+function AlertPrice({
+  value,
+  quote,
+  className,
+}: {
+  value: number;
+  quote?: string;
+  className?: string;
+}) {
+  if (quote === "IDR") {
+    return <span className={cn("tabular-nums", className)}>{formatIdr(value)}</span>;
+  }
+  return <CurrencyText usd={value} className={className} />;
+}
+
+// ------------------------------------------------------------
+// Kartu kecil 1 alert harga
+// ------------------------------------------------------------
+function AlertCard({
+  alert,
+  isOwner,
+  onDismiss,
+  dismissing,
+  onDelete,
+  deleting,
+}: {
+  alert: PriceAlert;
+  isOwner: boolean;
+  onDismiss: () => void;
+  dismissing: boolean;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
+  const pct = alertProgressPct(alert);
+  const above = alert.direction === "above";
+  const barColor =
+    alert.status === "triggered"
+      ? "bg-rose-500"
+      : pct >= 85
+        ? "bg-amber-500"
+        : "bg-emerald-500";
+
+  return (
+    <Card className="rounded-xl p-4">
+      <div className="flex flex-wrap items-start gap-3">
+        <span
+          className={cn(
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+            above
+              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+              : "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+          )}
+          aria-hidden="true"
+        >
+          {above ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+            <span className="tracking-tight">{alert.symbol}</span>
+            <span className="text-xs font-normal text-muted-foreground">
+              {above ? "di atas" : "di bawah"}
+            </span>
+            <AlertStatusBadge status={alert.status} />
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Target <AlertPrice value={alert.threshold} quote={alert.quote} className="font-medium text-foreground" />
+            {" · "}
+            Sekarang <AlertPrice value={alert.currentPrice} quote={alert.quote} />
+          </p>
+        </div>
+
+        {isOwner && (
+          <div className="flex shrink-0 items-center gap-2">
+            {alert.status !== "dismissed" && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="min-h-[32px] text-xs"
+                disabled={dismissing}
+                onClick={onDismiss}
+              >
+                {dismissing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : null}
+                Dismiss
+              </Button>
+            )}
+            <ConfirmButton
+              size="sm"
+              variant="outline"
+              confirmLabel="Yakin?"
+              title={`Hapus alert ${alert.symbol}`}
+              className="min-h-[32px] text-xs text-muted-foreground hover:text-rose-600"
+              onConfirm={onDelete}
+              disabled={deleting}
+            >
+              {deleting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Hapus
+            </ConfirmButton>
+          </div>
+        )}
+      </div>
+
+      {alert.note && (
+        <p className="mt-2 flex items-center gap-1 truncate text-xs text-muted-foreground">
+          <StickyNote className="h-3 w-3 shrink-0" aria-hidden="true" />
+          {alert.note}
+        </p>
+      )}
+
+      {/* Progress mini menuju threshold */}
+      <div
+        className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-label={`Progres ${alert.symbol} menuju threshold`}
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={cn("h-full rounded-full transition-all duration-500", barColor)}
+          style={{ width: `${Math.max(2, pct)}%` }}
+        />
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10px] tabular-nums text-muted-foreground/80">
+        <span>
+          Dibuat {timeAgo(alert.createdAt)}
+          {alert.status === "triggered" && alert.triggeredAt
+            ? ` · terpicu ${timeAgo(alert.triggeredAt)}`
+            : ""}
+        </span>
+        <span>{Math.round(pct)}%</span>
+      </div>
+    </Card>
+  );
+}
+
+// ------------------------------------------------------------
+// Dialog "+ Alert Baru" (owner)
+// ------------------------------------------------------------
+function AddAlertDialog({
+  open,
+  onOpenChange,
+  symbols,
+  pending,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  symbols: SymbolInfo[];
+  pending: boolean;
+  onSubmit: (body: { symbol: string; direction: "above" | "below"; threshold: number; note?: string }) => void;
+}) {
+  const [symbol, setSymbol] = React.useState("");
+  const [direction, setDirection] = React.useState<"above" | "below">("above");
+  const [threshold, setThreshold] = React.useState("");
+  const [note, setNote] = React.useState("");
+
+  React.useEffect(() => {
+    if (open) {
+      setSymbol("");
+      setDirection("above");
+      setThreshold("");
+      setNote("");
+    }
+  }, [open]);
+
+  const th = Number(threshold);
+  const valid = Boolean(symbol) && Number.isFinite(th) && th > 0;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Alert Harga Baru</DialogTitle>
+          <DialogDescription>
+            Notifikasi otomatis saat harga menembus threshold — masuk ke Pusat Notifikasi Dashboard.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="alert-symbol">Simbol</Label>
+            <Select value={symbol} onValueChange={setSymbol}>
+              <SelectTrigger id="alert-symbol" className="w-full" aria-label="Pilih simbol alert">
+                <SelectValue placeholder="Pilih simbol…" />
+              </SelectTrigger>
+              <SelectContent className="max-h-64">
+                {symbols.map((s) => (
+                  <SelectItem key={s.symbol} value={s.symbol}>
+                    <span className="flex items-center gap-2">
+                      <span className="font-semibold">{s.symbol}</span>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        ${s.usd >= 1000 ? s.usd.toLocaleString("en-US", { maximumFractionDigits: 0 }) : s.usd.toFixed(2)}
+                      </span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="alert-direction">Arah</Label>
+            <Select value={direction} onValueChange={(v) => setDirection(v as "above" | "below")}>
+              <SelectTrigger id="alert-direction" className="w-full" aria-label="Arah alert">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="above">
+                  <span className="flex items-center gap-2">
+                    <TrendingUp className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                    Di atas threshold
+                  </span>
+                </SelectItem>
+                <SelectItem value="below">
+                  <span className="flex items-center gap-2">
+                    <TrendingDown className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" aria-hidden="true" />
+                    Di bawah threshold
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="alert-threshold">Threshold (USD)</Label>
+            <Input
+              id="alert-threshold"
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="any"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+              placeholder="mis. 100000"
+              aria-invalid={threshold !== "" && !(Number.isFinite(th) && th > 0)}
+            />
+            {threshold !== "" && !(Number.isFinite(th) && th > 0) && (
+              <p className="text-xs font-medium text-rose-600 dark:text-rose-400">
+                Threshold harus angka lebih besar dari 0.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="alert-note">Catatan (opsional)</Label>
+            <Input
+              id="alert-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="mis. entry zone DCA, take profit…"
+              maxLength={120}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Batal
+          </Button>
+          <Button
+            type="button"
+            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            disabled={!valid || pending}
+            onClick={() => onSubmit({ symbol, direction, threshold: th, note: note.trim() || undefined })}
+          >
+            {pending ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Bell className="h-4 w-4" aria-hidden="true" />
+            )}
+            Buat Alert
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ------------------------------------------------------------
+// Panel "Alert Harga" — query 30s (GET lazy-eval) + toast saat terpicu
+// RBAC: read owner/advisor/beneficiary · CRUD owner · executor tanpa akses
+// ------------------------------------------------------------
+function AlertsPanel({ symbols }: { symbols: SymbolInfo[] }) {
+  const queryClient = useQueryClient();
+  const user = useAppStore((s) => s.user);
+  const isOwner = user?.role === "owner";
+  const [addOpen, setAddOpen] = React.useState(false);
+
+  const alertsQuery = useQuery<MarketAlertsResponse, ApiError>({
+    queryKey: ["market", "alerts"],
+    queryFn: () => apiFetch<MarketAlertsResponse>("/market/alerts"),
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+
+  const alerts = alertsQuery.data?.alerts ?? [];
+  const triggeredCount = alertsQuery.data?.triggeredCount ?? 0;
+
+  // GET memicu evaluasi server → jika jumlah terpicu naik vs sebelumnya → toast
+  const prevTriggered = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!alertsQuery.data) return;
+    const count = alertsQuery.data.triggeredCount ?? 0;
+    if (prevTriggered.current !== null && count > prevTriggered.current) {
+      toast("🔔 Alert harga terpicu!", {
+        description: "Harga menembus threshold — cek panel Alert Harga & Pusat Notifikasi.",
+      });
+    }
+    prevTriggered.current = count;
+  }, [alertsQuery.data]);
+
+  const invalidateAlerts = () =>
+    void queryClient.invalidateQueries({ queryKey: ["market", "alerts"] });
+
+  const createMutation = useMutation({
+    mutationFn: (body: { symbol: string; direction: "above" | "below"; threshold: number; note?: string }) =>
+      apiFetch<PriceAlert>("/market/alerts", { method: "POST", body }),
+    onSuccess: (_d, vars) => {
+      toast.success(`Alert ${vars.symbol} dibuat`, {
+        description: `${vars.direction === "above" ? "Di atas" : "Di bawah"} ${vars.threshold} USD.`,
+      });
+      setAddOpen(false);
+      invalidateAlerts();
+    },
+    onError: (err) => {
+      toast.error("Gagal membuat alert", {
+        description: err instanceof ApiError ? err.message : "Coba lagi sebentar",
+      });
+    },
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<PriceAlert>(`/market/alerts/${id}/dismiss`, { method: "POST" }),
+    onSuccess: (_d, id) => {
+      const target = alerts.find((a) => a.id === id);
+      toast.success(`Alert ${target?.symbol ?? ""} di-dismiss`);
+      invalidateAlerts();
+    },
+    onError: (err) => {
+      toast.error("Gagal dismiss alert", {
+        description: err instanceof ApiError ? err.message : "Coba lagi sebentar",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<void>(`/market/alerts/${id}`, { method: "DELETE" }),
+    onSuccess: (_d, id) => {
+      const target = alerts.find((a) => a.id === id);
+      toast.success(`Alert ${target?.symbol ?? ""} dihapus`);
+      invalidateAlerts();
+    },
+    onError: (err) => {
+      toast.error("Gagal menghapus alert", {
+        description: err instanceof ApiError ? err.message : "Coba lagi sebentar",
+      });
+    },
+  });
+
+  return (
+    <SectionCard
+      title="Alert Harga"
+      description="Notifikasi otomatis saat harga menembus threshold — dicek server tiap GET/30 detik."
+      contentClassName="px-6 pb-6"
+      actions={
+        <>
+          {triggeredCount > 0 && (
+            <Badge
+              variant="outline"
+              className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            >
+              <Bell className="h-3 w-3 animate-pulse" aria-hidden="true" />
+              {triggeredCount} terpicu
+            </Badge>
+          )}
+          {isOwner && (
+            <Button
+              type="button"
+              size="sm"
+              className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => setAddOpen(true)}
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Alert Baru
+            </Button>
+          )}
+        </>
+      }
+    >
+      {alertsQuery.isPending && !alertsQuery.data ? (
+        <LoadingRows rows={3} />
+      ) : alertsQuery.isError ? (
+        <ErrorBox
+          message={
+            alertsQuery.error instanceof ApiError ? alertsQuery.error.message : undefined
+          }
+          onRetry={() => void alertsQuery.refetch()}
+        />
+      ) : alerts.length === 0 ? (
+        <EmptyState
+          icon={<Bell className="h-6 w-6" />}
+          title="Belum ada alert harga"
+          description={
+            isOwner
+              ? "Buat alert untuk diperingatkan saat BTC, saham, atau emas menyentuh level target Anda."
+              : "Owner dapat membuat alert harga — notifikasi muncul di sini & Pusat Notifikasi Dashboard."
+          }
+          action={
+            isOwner && (
+              <Button
+                type="button"
+                size="sm"
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                onClick={() => setAddOpen(true)}
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Alert Baru
+              </Button>
+            )
+          }
+        />
+      ) : (
+        <div className="space-y-3">
+          {alerts.map((a) => (
+            <AlertCard
+              key={a.id}
+              alert={a}
+              isOwner={isOwner}
+              onDismiss={() => dismissMutation.mutate(a.id)}
+              dismissing={dismissMutation.isPending && dismissMutation.variables === a.id}
+              onDelete={() => deleteMutation.mutate(a.id)}
+              deleting={deleteMutation.isPending && deleteMutation.variables === a.id}
+            />
+          ))}
+        </div>
+      )}
+
+      <AddAlertDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        symbols={symbols}
+        pending={createMutation.isPending}
+        onSubmit={(body) => createMutation.mutate(body)}
+      />
+    </SectionCard>
+  );
+}
+
+// ------------------------------------------------------------
+// Konverter Mata Uang (PRD #10) — pivot USD, rate live dari /rates
+// Daftar: USD, IDR, BTC, ETH, BNB, SUI, XAU (per troy oz)
+// ------------------------------------------------------------
+const CONVERTER_CCYS = ["USD", "IDR", "BTC", "ETH", "BNB", "SUI", "XAU"] as const;
+type ConverterCcy = (typeof CONVERTER_CCYS)[number];
+
+function fmtConverterValue(v: number | null, ccy: ConverterCcy): string {
+  if (v === null || !Number.isFinite(v)) return "—";
+  if (ccy === "IDR") return formatIdr(v);
+  if (ccy === "USD") return formatUsd(v);
+  const abs = Math.abs(v);
+  const digits = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
+  return `${new Intl.NumberFormat("id-ID", {
+    maximumFractionDigits: digits,
+  }).format(v)} ${ccy}`;
+}
+
+function ConverterCard() {
+  const ratesQuery = useRates();
+  const rates = ratesQuery.data;
+
+  const [amountRaw, setAmountRaw] = React.useState("1");
+  const [from, setFrom] = React.useState<ConverterCcy>("BTC");
+  const [to, setTo] = React.useState<ConverterCcy>("IDR");
+
+  const amount = Number(amountRaw.replace(",", "."));
+  const amountValid = amountRaw.trim() !== "" && Number.isFinite(amount) && amount >= 0;
+
+  const usdIdr = typeof rates?.USDIDR === "number" && rates.USDIDR > 0 ? rates.USDIDR : null;
+
+  const toUsd = React.useCallback(
+    (ccy: ConverterCcy, value: number): number | null => {
+      if (ccy === "USD") return value;
+      if (ccy === "IDR") return usdIdr ? value / usdIdr : null;
+      const p = rates?.prices?.[ccy]?.usd;
+      return typeof p === "number" && p > 0 ? value * p : null;
+    },
+    [rates, usdIdr],
+  );
+
+  const fromUsd = React.useCallback(
+    (ccy: ConverterCcy, usd: number): number | null => {
+      if (ccy === "USD") return usd;
+      if (ccy === "IDR") return usdIdr ? usd * usdIdr : null;
+      const p = rates?.prices?.[ccy]?.usd;
+      return typeof p === "number" && p > 0 ? usd / p : null;
+    },
+    [rates, usdIdr],
+  );
+
+  const usdAmount = amountValid ? toUsd(from, amount) : null;
+  const result = usdAmount !== null ? fromUsd(to, usdAmount) : null;
+  const rateOne = fromUsd(to, toUsd(from, 1) ?? 0);
+
+  const swap = () => {
+    setFrom(to);
+    setTo(from);
+  };
+
+  const rateMissing =
+    amountValid &&
+    (result === null || rateOne === null) &&
+    (from !== to);
+
+  return (
+    <SectionCard
+      title="Konverter Mata Uang"
+      description="Konversi via kurs USD live — kripto & emas (per troy oz) · diperbarui otomatis."
+      contentClassName="px-6 pb-6"
+      actions={
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="min-h-[32px] text-xs"
+          onClick={swap}
+          aria-label="Tukar mata uang asal & tujuan"
+        >
+          <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden="true" />
+          Tukar
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor="conv-amount">Jumlah</Label>
+            <Input
+              id="conv-amount"
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="any"
+              value={amountRaw}
+              onChange={(e) => setAmountRaw(e.target.value)}
+              placeholder="mis. 1"
+              aria-invalid={amountRaw.trim() !== "" && !amountValid}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="conv-from">Dari</Label>
+            <Select value={from} onValueChange={(v) => setFrom(v as ConverterCcy)}>
+              <SelectTrigger id="conv-from" className="w-full" aria-label="Mata uang asal">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONVERTER_CCYS.map((c) => (
+                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="conv-to">Ke</Label>
+            <Select value={to} onValueChange={(v) => setTo(v as ConverterCcy)}>
+              <SelectTrigger id="conv-to" className="w-full" aria-label="Mata uang tujuan">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONVERTER_CCYS.map((c) => (
+                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div
+          className="rounded-lg border bg-muted/30 px-4 py-3"
+          role="status"
+          aria-label="Hasil konversi"
+        >
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Hasil
+          </p>
+          <p className="mt-0.5 text-2xl font-bold tabular-nums leading-tight sm:text-3xl">
+            {amountValid ? fmtConverterValue(result, to) : "—"}
+          </p>
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+            {rateMissing ? (
+              "Kurs belum tersedia — menunggu data harga."
+            ) : amountValid ? (
+              <>1 {from} = {fmtConverterValue(rateOne, to)}</>
+            ) : (
+              "Masukkan jumlah yang valid."
+            )}
+          </p>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+// ------------------------------------------------------------
 // MarketView
 // ------------------------------------------------------------
 export default function MarketView() {
   const queryClient = useQueryClient();
   const user = useAppStore((s) => s.user);
   const isOwner = user?.role === "owner";
+  // Executor 403 pada /market/alerts (RBAC) → panel tidak dirender utk role ini
+  const canViewAlerts = user?.role !== "executor";
 
   const [addOpen, setAddOpen] = React.useState(false);
   const [detailOpen, setDetailOpen] = React.useState(false);
@@ -689,7 +1373,7 @@ export default function MarketView() {
       )}
 
       {/* ---------- StatCards ---------- */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           loading={loadingAll}
           label="Simbol Dipantau"
@@ -723,6 +1407,9 @@ export default function MarketView() {
           icon={<Coins className="h-5 w-5" />}
         />
       </div>
+
+      {/* ---------- Panel Alert Harga (owner CRUD · advisor/beneficiary read · executor hidden) ---------- */}
+      {canViewAlerts && <AlertsPanel symbols={symbols} />}
 
       {/* ---------- Grid watchlist ---------- */}
       {loadingAll ? (
@@ -776,6 +1463,9 @@ export default function MarketView() {
           ))}
         </div>
       )}
+
+      {/* ---------- Konverter mata uang (PRD #10) ---------- */}
+      <ConverterCard />
 
       {/* ---------- Dialogs ---------- */}
       <WatchDetailDialog

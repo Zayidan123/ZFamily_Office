@@ -50,6 +50,7 @@
    ========================================================== */
 
 :root {
+  color-scheme: light; /* T-b: native controls (input number/scrollbar) ikut tema terang */
   --radius: 0.625rem;
   --background: oklch(0.985 0 0);            /* zinc-50 */
   --foreground: oklch(0.141 0.005 285.823);  /* zinc-950 */
@@ -85,6 +86,7 @@
 }
 
 .dark {
+  color-scheme: dark; /* T-b: native controls (input number/scrollbar) ikut tema gelap */
   --background: oklch(0.141 0.005 285.823);  /* zinc-950 */
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);         /* zinc-900 */
@@ -230,3 +232,13 @@
 /* touch 1791398355 */
 
 /* touch S-b */
+
+/* ==========================================================
+   T-b — Mobile polish: dialog tidak melebihi viewport.
+   Konten dialog lebih tinggi dari layar (mis. form di 390×844
+   + keyboard) dapat di-scroll, bukan terpotong/overflow.
+   ========================================================== */
+[data-slot="dialog-content"] {
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+}

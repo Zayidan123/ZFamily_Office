@@ -463,3 +463,47 @@ def seed_market_tax_if_empty(conn) -> bool:
                     f"Seed kewajiban pajak awal: {len(TAX_OBLIGATIONS)} item (mix status)")
         changed = True
     return changed
+
+
+# ------------------------------------------------- price alerts (modul baru)
+
+# symbol, direction, threshold, note, status, triggered_hours_ago (None = tetap active)
+PRICE_ALERTS = [
+    ("BTC", "above", 120000.0, "Target breakout ATH — evaluasi tesis", "active", None),
+    ("ETH", "below", 3000.0, "Zona akumulasi DCA tambahan", "active", None),
+    ("BBCA", "above", 10500.0, "Take profit bertahap", "triggered", 48),
+    ("XAU", "below", 2500.0, "Hedge alert", "active", None),
+]
+
+
+def seed_price_alerts_if_empty(conn) -> bool:
+    """Seed price alerts awal — hanya jika tabel price_alerts masih kosong (idempotent).
+
+    BBCA above 10500 di-seed berstatus TRIGGERED (2 hari lalu) + 1 row notifikasi
+    di tabel alerts (source price-watch, prefix "[alert#<id>]") agar dashboard
+    langsung menampilkan contoh alert terpicu.
+    """
+    if query_one(conn, "SELECT id FROM price_alerts LIMIT 1"):
+        return False
+    triggered_id = triggered_at = None
+    for i, (sym, direction, thr, note, status, trig_h) in enumerate(PRICE_ALERTS):
+        trig_at = _ago(0, hours=trig_h) if trig_h else None
+        new_id = execute(
+            conn,
+            "INSERT INTO price_alerts(symbol, direction, threshold, status, note, createdAt, triggeredAt) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (sym, direction, thr, status, note, _ago(14 - i * 2), trig_at),
+        )
+        if status == "triggered":
+            triggered_id, triggered_at = new_id, trig_at
+    if triggered_id:
+        execute(
+            conn,
+            "INSERT INTO alerts(kind, source, level, message, created_at) "
+            "VALUES('trading','price-watch','warning',?,?)",
+            (f"[alert#{triggered_id}] 🔔 BBCA menembus ke atas Rp 10,500 — take profit bertahap",
+             triggered_at),
+        )
+    write_audit(conn, None, "system.seed", "price_alert",
+                f"Seed price alerts awal: {len(PRICE_ALERTS)} alert (1 terpicu: BBCA above 10500)")
+    return True

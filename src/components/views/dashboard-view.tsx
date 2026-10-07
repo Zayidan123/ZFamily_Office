@@ -323,6 +323,7 @@ export default function DashboardView() {
                       boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
                     }}
                     labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                    itemStyle={{ color: "var(--popover-foreground)" }}
                     formatter={(value) => [formatCurrency(Number(value)), "Net Worth"]}
                     labelFormatter={(label) => formatMonthLabel(String(label))}
                   />
@@ -388,7 +389,10 @@ export default function DashboardView() {
                         border: "1px solid var(--border)",
                         borderRadius: 12,
                         fontSize: 12,
+                        color: "var(--popover-foreground)",
                       }}
+                      labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                      itemStyle={{ color: "var(--popover-foreground)" }}
                       formatter={(value, name) => [
                         formatCurrency(Number(value)),
                         CLASS_LABEL[String(name)] ?? String(name),

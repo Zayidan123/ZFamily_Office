@@ -622,6 +622,7 @@ export default function PortfolioView() {
                             color: "var(--popover-foreground)",
                           }}
                           labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                          itemStyle={{ color: "var(--popover-foreground)" }}
                           formatter={(value, name) => [
                             formatCurrency(Number(value)),
                             String(name),

@@ -1,0 +1,808 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ============================================================
+     4→     4→// Pasar — watchlist simbol & harga live
+     5→     5→// GET /market/watchlist (30s) · GET /market/symbols · GET /market/history
+     6→     6→// Sparkline mini (SVG) + dialog detail (AreaChart 7/30/90 hari)
+     7→     7→// RBAC: owner CRUD, lainnya read-only
+     8→     8→// ============================================================
+     9→     9→import * as React from "react";
+    10→    10→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    11→    11→import { toast } from "sonner";
+    12→    12→import { apiFetch, ApiError } from "@/lib/api";
+    13→    13→import { useAppStore } from "@/lib/store";
+    14→    14→import { formatDate, formatPct } from "@/lib/format";
+    15→    15→import {
+    16→    16→  StatCard,
+    17→    17→  PageHeader,
+    18→    18→  EmptyState,
+    19→    19→  ErrorBox,
+    20→    20→  CurrencyText,
+    21→    21→  useFormatCurrency,
+    22→    22→  useRates,
+    23→    23→  ConfirmButton,
+    24→    24→} from "@/components/shared/kit";
+    25→    25→import { cn } from "@/lib/utils";
+    26→    26→import { Button } from "@/components/ui/button";
+    27→    27→import { Card } from "@/components/ui/card";
+    28→    28→import { Badge } from "@/components/ui/badge";
+    29→    29→import { Input } from "@/components/ui/input";
+    30→    30→import { Label } from "@/components/ui/label";
+    31→    31→import { Skeleton } from "@/components/ui/skeleton";
+    32→    32→import {
+    33→    33→  Select,
+    34→    34→  SelectContent,
+    35→    35→  SelectItem,
+    36→    36→  SelectTrigger,
+    37→    37→  SelectValue,
+    38→    38→} from "@/components/ui/select";
+    39→    39→import {
+    40→    40→  Dialog,
+    41→    41→  DialogContent,
+    42→    42→  DialogDescription,
+    43→    43→  DialogFooter,
+    44→    44→  DialogHeader,
+    45→    45→  DialogTitle,
+    46→    46→} from "@/components/ui/dialog";
+    47→    47→import {
+    48→    48→  Area,
+    49→    49→  AreaChart,
+    50→    50→  CartesianGrid,
+    51→    51→  ResponsiveContainer,
+    52→    52→  Tooltip,
+    53→    53→  XAxis,
+    54→    54→  YAxis,
+    55→    55→} from "recharts";
+    56→    56→import {
+    57→    57→  LineChart as LineChartIcon,
+    58→    58→  Eye,
+    59→    59→  Plus,
+    60→    60→  Trash2,
+    61→    61→  Loader2,
+    62→    62→  TrendingUp,
+    63→    63→  TrendingDown,
+    64→    64→  Coins,
+    65→    65→  StickyNote,
+    66→    66→} from "lucide-react";
+    67→    67→
+    68→    68→// ------------------------------------------------------------
+    69→    69→// Types (inline sesuai kontrak R-b — types.ts tidak diubah)
+    70→    70→// ------------------------------------------------------------
+    71→    71→interface WatchPrice {
+    72→    72→  usd: number;
+    73→    73→  change24hPct: number;
+    74→    74→}
+    75→    75→
+    76→    76→interface WatchlistItem {
+    77→    77→  id: number;
+    78→    78→  symbol: string;
+    79→    79→  note: string | null;
+    80→    80→  addedAt: string;
+    81→    81→  price: WatchPrice;
+    82→    82→}
+    83→    83→
+    84→    84→interface SymbolInfo {
+    85→    85→  symbol: string;
+    86→    86→  usd: number;
+    87→    87→  change24hPct: number;
+    88→    88→}
+    89→    89→
+    90→    90→interface MarketHistoryPoint {
+    91→    91→  date: string;
+    92→    92→  price: number;
+    93→    93→}
+    94→    94→
+    95→    95→interface MarketHistory {
+    96→    96→  symbol: string;
+    97→    97→  days: number;
+    98→    98→  points: MarketHistoryPoint[];
+    99→    99→}
+   100→   100→
+   101→   101→// ------------------------------------------------------------
+   102→   102→// Sparkline mini — SVG polyline + area gradient
+   103→   103→// ------------------------------------------------------------
+   104→   104→function Sparkline({
+   105→   105→  values,
+   106→   106→  up,
+   107→   107→  className,
+   108→   108→}: {
+   109→   109→  values: number[];
+   110→   110→  up: boolean;
+   111→   111→  className?: string;
+   112→   112→}) {
+   113→   113→  const id = React.useId().replace(/[:]/g, "");
+   114→   114→  if (values.length < 2) return null;
+   115→   115→  const w = 120;
+   116→   116→  const h = 36;
+   117→   117→  const pad = 2;
+   118→   118→  const min = Math.min(...values);
+   119→   119→  const max = Math.max(...values);
+   120→   120→  const span = max - min || 1;
+   121→   121→  const step = (w - pad * 2) / (values.length - 1);
+   122→   122→  const coords = values.map((p, i) => {
+   123→   123→    const x = pad + i * step;
+   124→   124→    const y = h - pad - ((p - min) / span) * (h - pad * 2);
+   125→   125→    return [x, y] as const;
+   126→   126→  });
+   127→   127→  const linePath = coords
+   128→   128→    .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`)
+   129→   129→    .join(" ");
+   130→   130→  const last = coords[coords.length - 1];
+   131→   131→  const first = coords[0];
+   132→   132→  const areaPath = `${linePath} L${last[0].toFixed(1)},${h - pad} L${first[0].toFixed(1)},${h - pad} Z`;
+   133→   133→  const pointsAttr = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+   134→   134→  const color = up ? "#10b981" : "#f43f5e";
+   135→   135→
+   136→   136→  return (
+   137→   137→    <svg
+   138→   138→      viewBox={`0 0 ${w} ${h}`}
+   139→   139→      preserveAspectRatio="none"
+   140→   140→      className={cn("h-9 w-full", className)}
+   141→   141→      aria-hidden="true"
+   142→   142→    >
+   143→   143→      <defs>
+   144→   144→        <linearGradient id={`spark-${id}`} x1="0" y1="0" x2="0" y2="1">
+   145→   145→          <stop offset="0%" stopColor={color} stopOpacity={0.32} />
+   146→   146→          <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+   147→   147→        </linearGradient>
+   148→   148→      </defs>
+   149→   149→      <path d={areaPath} fill={`url(#spark-${id})`} stroke="none" />
+   150→   150→      <polyline
+   151→   151→        points={pointsAttr}
+   152→   152→        fill="none"
+   153→   153→        stroke={color}
+   154→   154→        strokeWidth={1.8}
+   155→   155→        strokeLinejoin="round"
+   156→   156→        strokeLinecap="round"
+   157→   157→      />
+   158→   158→    </svg>
+   159→   159→  );
+   160→   160→}
+   161→   161→
+   162→   162→// ------------------------------------------------------------
+   163→   163→// Hook history per simbol
+   164→   164→// ------------------------------------------------------------
+   165→   165→function useMarketHistory(symbol: string, days: number, enabled = true) {
+   166→   166→  return useQuery<MarketHistory, ApiError>({
+   167→   167→    queryKey: ["market", "history", symbol, days],
+   168→   168→    queryFn: () =>
+   169→   169→      apiFetch<MarketHistory>("/market/history", { params: { symbol, days } }),
+   170→   170→    enabled: enabled && Boolean(symbol),
+   171→   171→    staleTime: 60_000,
+   172→   172→    refetchInterval: 60_000,
+   173→   173→  });
+   174→   174→}
+   175→   175→
+   176→   176→// ------------------------------------------------------------
+   177→   177→// Kartu watchlist (sparkline mini + harga live)
+   178→   178→// ------------------------------------------------------------
+   179→   179→function WatchCard({
+   180→   180→  item,
+   181→   181→  isOwner,
+   182→   182→  onOpen,
+   183→   183→  onDelete,
+   184→   184→  deleting,
+   185→   185→}: {
+   186→   186→  item: WatchlistItem;
+   187→   187→  isOwner: boolean;
+   188→   188→  onOpen: () => void;
+   189→   189→  onDelete: () => void;
+   190→   190→  deleting: boolean;
+   191→   191→}) {
+   192→   192→  const historyQuery = useMarketHistory(item.symbol, 30);
+   193→   193→  const points = historyQuery.data?.points ?? [];
+   194→   194→  const values = React.useMemo(() => points.map((p) => p.price), [points]);
+   195→   195→  const up = item.price.change24hPct >= 0;
+   196→   196→
+   197→   197→  return (
+   198→   198→    <Card
+   199→   199→      role="button"
+   200→   200→      tabIndex={0}
+   201→   201→      aria-label={`Detail ${item.symbol}`}
+   202→   202→      onClick={onOpen}
+   203→   203→      onKeyDown={(e) => {
+   204→   204→        if (e.key === "Enter" || e.key === " ") {
+   205→   205→          e.preventDefault();
+   206→   206→          onOpen();
+   207→   207→        }
+   208→   208→      }}
+   209→   209→      className="group cursor-pointer rounded-xl p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+   210→   210→    >
+   211→   211→      <div className="flex items-start justify-between gap-2">
+   212→   212→        <div className="min-w-0">
+   213→   213→          <p className="truncate text-lg font-bold tracking-tight">{item.symbol}</p>
+   214→   214→          {item.note ? (
+   215→   215→            <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
+   216→   216→              <StickyNote className="h-3 w-3 shrink-0" aria-hidden="true" />
+   217→   217→              {item.note}
+   218→   218→            </p>
+   219→   219→          ) : (
+   220→   220→            <p className="mt-0.5 text-xs text-muted-foreground/60">
+   221→   221→              Ditambahkan {formatDate(item.addedAt)}
+   222→   222→            </p>
+   223→   223→          )}
+   224→   224→        </div>
+   225→   225→        {isOwner && (
+   226→   226→          <span onClick={(e) => e.stopPropagation()}>
+   227→   227→            <ConfirmButton
+   228→   228→              size="icon"
+   229→   229→              variant="ghost"
+   230→   230→              confirmLabel="?"
+   231→   231→              title={`Hapus ${item.symbol} dari watchlist`}
+   232→   232→              className="h-8 w-8 text-muted-foreground opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover:opacity-100"
+   233→   233→              onConfirm={onDelete}
+   234→   234→              disabled={deleting}
+   235→   235→            >
+   236→   236→              {deleting ? (
+   237→   237→                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   238→   238→              ) : (
+   239→   239→                <Trash2 className="h-4 w-4" aria-hidden="true" />
+   240→   240→              )}
+   241→   241→            </ConfirmButton>
+   242→   242→          </span>
+   243→   243→        )}
+   244→   244→      </div>
+   245→   245→
+   246→   246→      <div className="mt-3 flex items-end justify-between gap-2">
+   247→   247→        <CurrencyText
+   248→   248→          usd={item.price.usd}
+   249→   249→          className="text-xl font-semibold tabular-nums"
+   250→   250→        />
+   251→   251→        <Badge
+   252→   252→          variant="outline"
+   253→   253→          className={cn(
+   254→   254→            "tabular-nums",
+   255→   255→            up
+   256→   256→              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   257→   257→              : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+   258→   258→          )}
+   259→   259→        >
+   260→   260→          {formatPct(item.price.change24hPct)}
+   261→   261→        </Badge>
+   262→   262→      </div>
+   263→   263→
+   264→   264→      <div className="mt-2">
+   265→   265→        {historyQuery.isPending ? (
+   266→   266→          <Skeleton className="h-9 w-full rounded-md" />
+   267→   267→        ) : historyQuery.isError ? (
+   268→   268→          <p className="flex h-9 items-center text-xs text-muted-foreground">
+   269→   269→            Sparkline tidak tersedia
+   270→   270→          </p>
+   271→   271→        ) : (
+   272→   272→          <Sparkline values={values} up={up} />
+   273→   273→        )}
+   274→   274→      </div>
+   275→   275→    </Card>
+   276→   276→  );
+   277→   277→}
+   278→   278→
+   279→   279→// ------------------------------------------------------------
+   280→   280→// Dialog detail simbol (chart besar + toggle 7/30/90 hari)
+   281→   281→// ------------------------------------------------------------
+   282→   282→function WatchDetailDialog({
+   283→   283→  item,
+   284→   284→  open,
+   285→   285→  onOpenChange,
+   286→   286→}: {
+   287→   287→  item: WatchlistItem | null;
+   288→   288→  open: boolean;
+   289→   289→  onOpenChange: (v: boolean) => void;
+   290→   290→}) {
+   291→   291→  const [days, setDays] = React.useState<7 | 30 | 90>(30);
+   292→   292→  const formatCurrency = useFormatCurrency();
+   293→   293→  const symbol = item?.symbol ?? "";
+   294→   294→
+   295→   295→  React.useEffect(() => {
+   296→   296→    if (open) setDays(30);
+   297→   297→  }, [open, symbol]);
+   298→   298→
+   299→   299→  const historyQuery = useMarketHistory(symbol, days, open && Boolean(item));
+   300→   300→
+   301→   301→  const points = historyQuery.data?.points ?? [];
+   302→   302→  const first = points.length > 0 ? points[0].price : null;
+   303→   303→  const lastPrice = points.length > 0 ? points[points.length - 1].price : null;
+   304→   304→  const periodChange =
+   305→   305→    first && lastPrice ? ((lastPrice - first) / first) * 100 : null;
+   306→   306→
+   307→   307→  return (
+   308→   308→    <Dialog open={open} onOpenChange={onOpenChange}>
+   309→   309→      <DialogContent className="sm:max-w-lg">
+   310→   310→        {item && (
+   311→   311→          <>
+   312→   312→            <DialogHeader>
+   313→   313→              <DialogTitle className="flex items-center gap-2 text-xl">
+   314→   314→                {item.symbol}
+   315→   315→                <Badge
+   316→   316→                  variant="outline"
+   317→   317→                  className={cn(
+   318→   318→                    "tabular-nums",
+   319→   319→                    item.price.change24hPct >= 0
+   320→   320→                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   321→   321→                      : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+   322→   322→                  )}
+   323→   323→                >
+   324→   324→                  {formatPct(item.price.change24hPct)} 24j
+   325→   325→                </Badge>
+   326→   326→              </DialogTitle>
+   327→   327→              <DialogDescription>
+   328→   328→                Harga sekarang{" "}
+   329→   329→                <CurrencyText
+   330→   330→                  usd={item.price.usd}
+   331→   331→                  className="font-semibold text-foreground"
+   332→   332→                />{" "}
+   333→   333→                · ditambahkan {formatDate(item.addedAt)}
+   334→   334→              </DialogDescription>
+   335→   335→            </DialogHeader>
+   336→   336→
+   337→   337→            <div className="flex items-center justify-between gap-3">
+   338→   338→              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+   339→   339→                Riwayat Harga
+   340→   340→              </p>
+   341→   341→              <div className="flex gap-1" role="group" aria-label="Rentang hari">
+   342→   342→                {([7, 30, 90] as const).map((d) => (
+   343→   343→                  <Button
+   344→   344→                    key={d}
+   345→   345→                    type="button"
+   346→   346→                    size="sm"
+   347→   347→                    variant={days === d ? "default" : "outline"}
+   348→   348→                    className="h-7 px-2.5 text-xs"
+   349→   349→                    onClick={() => setDays(d)}
+   350→   350→                    aria-pressed={days === d}
+   351→   351→                  >
+   352→   352→                    {d} hari
+   353→   353→                  </Button>
+   354→   354→                ))}
+   355→   355→              </div>
+   356→   356→            </div>
+   357→   357→
+   358→   358→            <div className="h-[220px] w-full" role="img" aria-label={`Grafik harga ${symbol}`}>
+   359→   359→              {historyQuery.isPending ? (
+   360→   360→                <Skeleton className="h-full w-full rounded-lg" />
+   361→   361→              ) : historyQuery.isError ? (
+   362→   362→                <ErrorBox
+   363→   363→                  className="h-full"
+   364→   364→                  message={
+   365→   365→                    historyQuery.error instanceof ApiError
+   366→   366→                      ? historyQuery.error.message
+   367→   367→                      : undefined
+   368→   368→                  }
+   369→   369→                  onRetry={() => void historyQuery.refetch()}
+   370→   370→                />
+   371→   371→              ) : points.length === 0 ? (
+   372→   372→                <EmptyState title="Belum ada data riwayat" />
+   373→   373→              ) : (
+   374→   374→                <ResponsiveContainer width="100%" height="100%">
+   375→   375→                  <AreaChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+   376→   376→                    <defs>
+   377→   377→                      <linearGradient id={`detailFill-${symbol}`} x1="0" y1="0" x2="0" y2="1">
+   378→   378→                        <stop offset="0%" stopColor="#10b981" stopOpacity={0.32} />
+   379→   379→                        <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+   380→   380→                      </linearGradient>
+   381→   381→                    </defs>
+   382→   382→                    <CartesianGrid
+   383→   383→                      strokeDasharray="3 3"
+   384→   384→                      stroke="rgba(113,113,122,0.18)"
+   385→   385→                      vertical={false}
+   386→   386→                    />
+   387→   387→                    <XAxis
+   388→   388→                      dataKey="date"
+   389→   389→                      tick={{ fill: "#71717a", fontSize: 10 }}
+   390→   390→                      tickLine={false}
+   391→   391→                      axisLine={false}
+   392→   392→                      minTickGap={32}
+   393→   393→                      tickFormatter={(v: string) => v.slice(5)}
+   394→   394→                    />
+   395→   395→                    <YAxis
+   396→   396→                      tickFormatter={(v: number) => formatCurrency(v, true)}
+   397→   397→                      tick={{ fill: "#71717a", fontSize: 10 }}
+   398→   398→                      tickLine={false}
+   399→   399→                      axisLine={false}
+   400→   400→                      width={70}
+   401→   401→                      domain={["auto", "auto"]}
+   402→   402→                    />
+   403→   403→                    <Tooltip
+   404→   404→                      cursor={{ stroke: "rgba(113,113,122,0.35)", strokeDasharray: "4 4" }}
+   405→   405→                      contentStyle={{
+   406→   406→                        background: "var(--popover)",
+   407→   407→                        border: "1px solid var(--border)",
+   408→   408→                        borderRadius: 12,
+   409→   409→                        fontSize: 12,
+   410→   410→                      }}
+   411→   411→                      formatter={(value) => [formatCurrency(Number(value)), "Harga"]}
+   412→   412→                    />
+   413→   413→                    <Area
+   414→   414→                      type="monotone"
+   415→   415→                      dataKey="price"
+   416→   416→                      stroke="#10b981"
+   417→   417→                      strokeWidth={2.2}
+   418→   418→                      fill={`url(#detailFill-${symbol})`}
+   419→   419→                      dot={false}
+   420→   420→                      activeDot={{ r: 4, strokeWidth: 0 }}
+   421→   421→                    />
+   422→   422→                  </AreaChart>
+   423→   423→                </ResponsiveContainer>
+   424→   424→              )}
+   425→   425→            </div>
+   426→   426→
+   427→   427→            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+   428→   428→              <span className="text-muted-foreground">Perubahan {days} hari:</span>
+   429→   429→              {periodChange === null ? (
+   430→   430→                <span className="tabular-nums">—</span>
+   431→   431→              ) : (
+   432→   432→                <span
+   433→   433→                  className={cn(
+   434→   434→                    "font-semibold tabular-nums",
+   435→   435→                    periodChange >= 0
+   436→   436→                      ? "text-emerald-600 dark:text-emerald-400"
+   437→   437→                      : "text-rose-600 dark:text-rose-400",
+   438→   438→                  )}
+   439→   439→                >
+   440→   440→                  {formatPct(periodChange)}
+   441→   441→                </span>
+   442→   442→              )}
+   443→   443→            </div>
+   444→   444→
+   445→   445→            {item.note && (
+   446→   446→              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+   447→   447→                <StickyNote className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+   448→   448→                <div>
+   449→   449→                  <p className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+   450→   450→                    Catatan
+   451→   451→                  </p>
+   452→   452→                  <p className="whitespace-pre-wrap">{item.note}</p>
+   453→   453→                </div>
+   454→   454→              </div>
+   455→   455→            )}
+   456→   456→            <p className="text-xs text-muted-foreground/70">
+   457→   457→              Untuk mengubah catatan, hapus simbol lalu tambahkan ulang dengan catatan baru.
+   458→   458→            </p>
+   459→   459→          </>
+   460→   460→        )}
+   461→   461→      </DialogContent>
+   462→   462→    </Dialog>
+   463→   463→  );
+   464→   464→}
+   465→   465→
+   466→   466→// ------------------------------------------------------------
+   467→   467→// Dialog "+ Pantau Simbol" (owner)
+   468→   468→// ------------------------------------------------------------
+   469→   469→function AddWatchDialog({
+   470→   470→  open,
+   471→   471→  onOpenChange,
+   472→   472→  symbols,
+   473→   473→  watchedSymbols,
+   474→   474→  pending,
+   475→   475→  onSubmit,
+   476→   476→}: {
+   477→   477→  open: boolean;
+   478→   478→  onOpenChange: (v: boolean) => void;
+   479→   479→  symbols: SymbolInfo[];
+   480→   480→  watchedSymbols: string[];
+   481→   481→  pending: boolean;
+   482→   482→  onSubmit: (symbol: string, note: string) => void;
+   483→   483→}) {
+   484→   484→  const [symbol, setSymbol] = React.useState("");
+   485→   485→  const [note, setNote] = React.useState("");
+   486→   486→
+   487→   487→  React.useEffect(() => {
+   488→   488→    if (open) {
+   489→   489→      setSymbol("");
+   490→   490→      setNote("");
+   491→   491→    }
+   492→   492→  }, [open]);
+   493→   493→
+   494→   494→  const available = symbols.filter((s) => !watchedSymbols.includes(s.symbol));
+   495→   495→
+   496→   496→  return (
+   497→   497→    <Dialog open={open} onOpenChange={onOpenChange}>
+   498→   498→      <DialogContent className="sm:max-w-md">
+   499→   499→        <DialogHeader>
+   500→   500→          <DialogTitle>Pantau Simbol Baru</DialogTitle>
+   501→   501→          <DialogDescription>
+   502→   502→            Pilih simbol dari daftar harga yang tersedia, tambahkan catatan opsional.
+   503→   503→          </DialogDescription>
+   504→   504→        </DialogHeader>
+   505→   505→
+   506→   506→        <div className="space-y-4">
+   507→   507→          <div className="space-y-2">
+   508→   508→            <Label htmlFor="watch-symbol">Simbol</Label>
+   509→   509→            <Select value={symbol} onValueChange={setSymbol}>
+   510→   510→              <SelectTrigger id="watch-symbol" className="w-full" aria-label="Pilih simbol">
+   511→   511→                <SelectValue placeholder="Pilih simbol…" />
+   512→   512→              </SelectTrigger>
+   513→   513→              <SelectContent>
+   514→   514→                {available.length === 0 ? (
+   515→   515→                  <div className="px-3 py-2 text-sm text-muted-foreground">
+   516→   516→                    Semua simbol sudah dipantau
+   517→   517→                  </div>
+   518→   518→                ) : (
+   519→   519→                  available.map((s) => (
+   520→   520→                    <SelectItem key={s.symbol} value={s.symbol}>
+   521→   521→                      <span className="flex items-center gap-2">
+   522→   522→                        <span className="font-semibold">{s.symbol}</span>
+   523→   523→                        <span className="text-xs tabular-nums text-muted-foreground">
+   524→   524→                          ${s.usd >= 1000 ? s.usd.toLocaleString("en-US", { maximumFractionDigits: 0 }) : s.usd.toFixed(2)}
+   525→   525→                        </span>
+   526→   526→                      </span>
+   527→   527→                    </SelectItem>
+   528→   528→                  ))
+   529→   529→                )}
+   530→   530→              </SelectContent>
+   531→   531→            </Select>
+   532→   532→          </div>
+   533→   533→
+   534→   534→          <div className="space-y-2">
+   535→   535→            <Label htmlFor="watch-note">Catatan (opsional)</Label>
+   536→   536→            <Input
+   537→   537→              id="watch-note"
+   538→   538→              value={note}
+   539→   539→              onChange={(e) => setNote(e.target.value)}
+   540→   540→              placeholder="mis. DCA bulanan, entry zone akumulasi…"
+   541→   541→              maxLength={120}
+   542→   542→            />
+   543→   543→          </div>
+   544→   544→        </div>
+   545→   545→
+   546→   546→        <DialogFooter>
+   547→   547→          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+   548→   548→            Batal
+   549→   549→          </Button>
+   550→   550→          <Button
+   551→   551→            type="button"
+   552→   552→            className="bg-emerald-600 text-white hover:bg-emerald-700"
+   553→   553→            disabled={!symbol || pending}
+   554→   554→            onClick={() => onSubmit(symbol, note.trim())}
+   555→   555→          >
+   556→   556→            {pending ? (
+   557→   557→              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   558→   558→            ) : (
+   559→   559→              <Plus className="h-4 w-4" aria-hidden="true" />
+   560→   560→            )}
+   561→   561→            Pantau
+   562→   562→          </Button>
+   563→   563→        </DialogFooter>
+   564→   564→      </DialogContent>
+   565→   565→    </Dialog>
+   566→   566→  );
+   567→   567→}
+   568→   568→
+   569→   569→// ------------------------------------------------------------
+   570→   570→// MarketView
+   571→   571→// ------------------------------------------------------------
+   572→   572→export default function MarketView() {
+   573→   573→  const queryClient = useQueryClient();
+   574→   574→  const user = useAppStore((s) => s.user);
+   575→   575→  const isOwner = user?.role === "owner";
+   576→   576→
+   577→   577→  const [addOpen, setAddOpen] = React.useState(false);
+   578→   578→  const [detailOpen, setDetailOpen] = React.useState(false);
+   579→   579→  const [selected, setSelected] = React.useState<WatchlistItem | null>(null);
+   580→   580→
+   581→   581→  // ---------- Queries ----------
+   582→   582→  const watchlistQuery = useQuery<WatchlistItem[], ApiError>({
+   583→   583→    queryKey: ["market", "watchlist"],
+   584→   584→    queryFn: () => apiFetch<WatchlistItem[]>("/market/watchlist"),
+   585→   585→    refetchInterval: 30_000,
+   586→   586→    staleTime: 25_000,
+   587→   587→  });
+   588→   588→
+   589→   589→  const symbolsQuery = useQuery<SymbolInfo[], ApiError>({
+   590→   590→    queryKey: ["market", "symbols"],
+   591→   591→    queryFn: () => apiFetch<SymbolInfo[]>("/market/symbols"),
+   592→   592→    staleTime: 60_000,
+   593→   593→  });
+   594→   594→
+   595→   595→  const ratesQuery = useRates();
+   596→   596→
+   597→   597→  const watchlist = watchlistQuery.data ?? [];
+   598→   598→  const symbols = symbolsQuery.data ?? [];
+   599→   599→
+   600→   600→  // ---------- Mutations ----------
+   601→   601→  const invalidateWatchlist = () =>
+   602→   602→    void queryClient.invalidateQueries({ queryKey: ["market", "watchlist"] });
+   603→   603→
+   604→   604→  const addMutation = useMutation({
+   605→   605→    mutationFn: (body: { symbol: string; note?: string }) =>
+   606→   606→      apiFetch<WatchlistItem>("/market/watchlist", { method: "POST", body }),
+   607→   607→    onSuccess: (_data, vars) => {
+   608→   608→      toast.success(`${vars.symbol} ditambahkan ke watchlist`);
+   609→   609→      setAddOpen(false);
+   610→   610→      invalidateWatchlist();
+   611→   611→    },
+   612→   612→    onError: (err) => {
+   613→   613→      toast.error("Gagal menambah simbol", {
+   614→   614→        description: err instanceof ApiError ? err.message : "Coba lagi sebentar",
+   615→   615→      });
+   616→   616→    },
+   617→   617→  });
+   618→   618→
+   619→   619→  const deleteMutation = useMutation({
+   620→   620→    mutationFn: (id: number) =>
+   621→   621→      apiFetch<void>(`/market/watchlist/${id}`, { method: "DELETE" }),
+   622→   622→    onSuccess: (_d, id) => {
+   623→   623→      const target = watchlist.find((w) => w.id === id);
+   624→   624→      toast.success(`${target?.symbol ?? "Simbol"} dihapus dari watchlist`);
+   625→   625→      if (selected?.id === id) {
+   626→   626→        setDetailOpen(false);
+   627→   627→        setSelected(null);
+   628→   628→      }
+   629→   629→      invalidateWatchlist();
+   630→   630→    },
+   631→   631→    onError: (err) => {
+   632→   632→      toast.error("Gagal menghapus simbol", {
+   633→   633→        description: err instanceof ApiError ? err.message : "Coba lagi sebentar",
+   634→   634→      });
+   635→   635→    },
+   636→   636→  });
+   637→   637→
+   638→   638→  // ---------- Derived stats ----------
+   639→   639→  const gainers = watchlist.filter((w) => w.price?.change24hPct !== undefined);
+   640→   640→  const topGainer =
+   641→   641→    gainers.length > 0
+   642→   642→      ? gainers.reduce((a, b) =>
+   643→   643→          b.price.change24hPct > a.price.change24hPct ? b : a,
+   644→   644→        )
+   645→   645→      : null;
+   646→   646→  const topLoser =
+   647→   647→    gainers.length > 0
+   648→   648→      ? gainers.reduce((a, b) =>
+   649→   649→          b.price.change24hPct < a.price.change24hPct ? b : a,
+   650→   650→        )
+   651→   651→      : null;
+   652→   652→  const xau =
+   653→   653→    ratesQuery.data?.prices?.XAU ??
+   654→   654→    (symbols.find((s) => s.symbol === "XAU")
+   655→   655→      ? {
+   656→   656→          usd: symbols.find((s) => s.symbol === "XAU")!.usd,
+   657→   657→          change24hPct: symbols.find((s) => s.symbol === "XAU")!.change24hPct,
+   658→   658→        }
+   659→   659→      : null);
+   660→   660→
+   661→   661→  const loadingAll = watchlistQuery.isPending && !watchlistQuery.data;
+   662→   662→  const errMsg =
+   663→   663→    watchlistQuery.error instanceof ApiError
+   664→   664→      ? watchlistQuery.error.message
+   665→   665→      : undefined;
+   666→   666→
+   667→   667→  return (
+   668→   668→    <div className="space-y-6">
+   669→   669→      <PageHeader
+   670→   670→        title="Pasar"
+   671→   671→        subtitle="Watchlist simbol & harga live — diperbarui otomatis tiap 30 detik."
+   672→   672→        actions={
+   673→   673→          isOwner && (
+   674→   674→            <Button
+   675→   675→              type="button"
+   676→   676→              size="sm"
+   677→   677→              className="min-h-[40px] bg-emerald-600 text-white hover:bg-emerald-700"
+   678→   678→              onClick={() => setAddOpen(true)}
+   679→   679→            >
+   680→   680→              <Plus className="h-4 w-4" aria-hidden="true" />
+   681→   681→              Pantau Simbol
+   682→   682→            </Button>
+   683→   683→          )
+   684→   684→        }
+   685→   685→      />
+   686→   686→
+   687→   687→      {watchlistQuery.isError && !watchlistQuery.data && (
+   688→   688→        <ErrorBox message={errMsg} onRetry={() => void watchlistQuery.refetch()} />
+   689→   689→      )}
+   690→   690→
+   691→   691→      {/* ---------- StatCards ---------- */}
+   692→   692→      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+   693→   693→        <StatCard
+   694→   694→          loading={loadingAll}
+   695→   695→          label="Simbol Dipantau"
+   696→   696→          value={watchlistQuery.data ? `${watchlist.length}` : "—"}
+   697→   697→          sub={`${symbols.length || "—"} simbol tersedia`}
+   698→   698→          icon={<Eye className="h-5 w-5" />}
+   699→   699→        />
+   700→   700→        <StatCard
+   701→   701→          loading={loadingAll}
+   702→   702→          label="Gainer Teratas"
+   703→   703→          value={topGainer ? topGainer.symbol : "—"}
+   704→   704→          delta={topGainer?.price.change24hPct ?? null}
+   705→   705→          sub={topGainer ? <CurrencyText usd={topGainer.price.usd} compact /> : undefined}
+   706→   706→          icon={<TrendingUp className="h-5 w-5" />}
+   707→   707→        />
+   708→   708→        <StatCard
+   709→   709→          loading={loadingAll}
+   710→   710→          label="Loser Teratas"
+   711→   711→          value={topLoser ? topLoser.symbol : "—"}
+   712→   712→          delta={topLoser?.price.change24hPct ?? null}
+   713→   713→          sub={topLoser ? <CurrencyText usd={topLoser.price.usd} compact /> : undefined}
+   714→   714→          accent="rose"
+   715→   715→          icon={<TrendingDown className="h-5 w-5" />}
+   716→   716→        />
+   717→   717→        <StatCard
+   718→   718→          label="XAU / USD"
+   719→   719→          value={xau ? formatXauValue(xau.usd) : "—"}
+   720→   720→          delta={xau?.change24hPct ?? null}
+   721→   721→          sub="Emas spot per troy ounce"
+   722→   722→          accent="amber"
+   723→   723→          icon={<Coins className="h-5 w-5" />}
+   724→   724→        />
+   725→   725→      </div>
+   726→   726→
+   727→   727→      {/* ---------- Grid watchlist ---------- */}
+   728→   728→      {loadingAll ? (
+   729→   729→        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-busy="true">
+   730→   730→          {Array.from({ length: 3 }).map((_, i) => (
+   731→   731→            <Card key={i} className="rounded-xl p-5">
+   732→   732→              <Skeleton className="h-6 w-24" />
+   733→   733→              <Skeleton className="mt-3 h-4 w-32" />
+   734→   734→              <Skeleton className="mt-4 h-7 w-28" />
+   735→   735→              <Skeleton className="mt-4 h-9 w-full rounded-md" />
+   736→   736→            </Card>
+   737→   737→          ))}
+   738→   738→        </div>
+   739→   739→      ) : watchlist.length === 0 ? (
+   740→   740→        <EmptyState
+   741→   741→          icon={<LineChartIcon className="h-6 w-6" />}
+   742→   742→          title="Watchlist masih kosong"
+   743→   743→          description={
+   744→   744→            isOwner
+   745→   745→              ? "Pantau simbol favorit — BTC, ETH, XAU, saham, dan lainnya — lengkap dengan harga live dan sparkline 30 hari."
+   746→   746→              : "Belum ada simbol yang dipantau. Owner dapat menambahkan simbol untuk dipantau."
+   747→   747→          }
+   748→   748→          action={
+   749→   749→            isOwner && (
+   750→   750→              <Button
+   751→   751→                type="button"
+   752→   752→                size="sm"
+   753→   753→                className="bg-emerald-600 text-white hover:bg-emerald-700"
+   754→   754→                onClick={() => setAddOpen(true)}
+   755→   755→              >
+   756→   756→                <Plus className="h-4 w-4" aria-hidden="true" />
+   757→   757→                Pantau Simbol
+   758→   758→              </Button>
+   759→   759→            )
+   760→   760→          }
+   761→   761→        />
+   762→   762→      ) : (
+   763→   763→        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+   764→   764→          {watchlist.map((item) => (
+   765→   765→            <WatchCard
+   766→   766→              key={item.id}
+   767→   767→              item={item}
+   768→   768→              isOwner={isOwner}
+   769→   769→              onOpen={() => {
+   770→   770→                setSelected(item);
+   771→   771→                setDetailOpen(true);
+   772→   772→              }}
+   773→   773→              onDelete={() => deleteMutation.mutate(item.id)}
+   774→   774→              deleting={deleteMutation.isPending && deleteMutation.variables === item.id}
+   775→   775→            />
+   776→   776→          ))}
+   777→   777→        </div>
+   778→   778→      )}
+   779→   779→
+   780→   780→      {/* ---------- Dialogs ---------- */}
+   781→   781→      <WatchDetailDialog
+   782→   782→        item={selected}
+   783→   783→        open={detailOpen}
+   784→   784→        onOpenChange={setDetailOpen}
+   785→   785→      />
+   786→   786→
+   787→   787→      <AddWatchDialog
+   788→   788→        open={addOpen}
+   789→   789→        onOpenChange={setAddOpen}
+   790→   790→        symbols={symbols}
+   791→   791→        watchedSymbols={watchlist.map((w) => w.symbol)}
+   792→   792→        pending={addMutation.isPending}
+   793→   793→        onSubmit={(symbol, note) =>
+   794→   794→          addMutation.mutate({ symbol, note: note || undefined })
+   795→   795→        }
+   796→   796→      />
+   797→   797→    </div>
+   798→   798→  );
+   799→   799→}
+   800→   800→
+   801→   801→function formatXauValue(usd: number): string {
+   802→   802→  return new Intl.NumberFormat("en-US", {
+   803→   803→    style: "currency",
+   804→   804→    currency: "USD",
+   805→   805→    maximumFractionDigits: 0,
+   806→   806→  }).format(usd);
+   807→   807→}
+   808→   808→

@@ -1048,8 +1048,10 @@ function ProjectionTab() {
                     border: "1px solid var(--border)",
                     borderRadius: 12,
                     fontSize: 12,
+                    color: "var(--popover-foreground)",
                   }}
                   labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                  itemStyle={{ color: "var(--popover-foreground)" }}
                   formatter={(value) => [format(Number(value)), "Proyeksi"]}
                   labelFormatter={(label) => `Tahun ke-${label}`}
                 />

@@ -587,7 +587,7 @@ function PaperTradingPanel() {
               }
             />
           ) : (
-            <div className="max-h-80 overflow-y-auto rounded-lg border">
+            <div className="max-h-80 overflow-auto rounded-lg border">
               <Table>
                 <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
                   <TableRow>
@@ -648,7 +648,7 @@ function PaperTradingPanel() {
             description="Riwayat eksekusi order sandbox akan tampil di sini."
           />
         ) : (
-          <div className="max-h-96 overflow-y-auto rounded-lg border">
+          <div className="max-h-96 overflow-auto rounded-lg border">
             <Table>
               <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
                 <TableRow>
@@ -1057,6 +1057,7 @@ export default function TradingView() {
                       color: "var(--popover-foreground)",
                     }}
                     labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                    itemStyle={{ color: "var(--popover-foreground)" }}
                     formatter={(value) => [formatCurrency(Number(value)), "PnL"]}
                   />
                   <Bar dataKey="pnlUsd" radius={[0, 4, 4, 0]} maxBarSize={22}>
@@ -1150,7 +1151,7 @@ export default function TradingView() {
             description="Trade yang dieksekusi strategi akan tercatat di sini."
           />
         ) : (
-          <div className="max-h-96 overflow-y-auto rounded-lg border">
+          <div className="max-h-96 overflow-auto rounded-lg border">
             <Table>
               <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
                 <TableRow>

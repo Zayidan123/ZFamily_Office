@@ -187,7 +187,7 @@ function ClassStatCard({
         <DeltaPct value={row.change24hPct} />
       </div>
       <div className="text-2xl font-semibold leading-none tabular-nums">
-        {formatCurrency(row.valueUsd)}
+        <span className="block truncate" title={formatCurrency(row.valueUsd)}>{formatCurrency(row.valueUsd)}</span>
       </div>
       <div className="text-xs text-muted-foreground">
         {row.count} aset · {formatPct(row.pct, false)} portofolio
@@ -693,7 +693,7 @@ export default function AssetsView() {
 
       {/* ================= StatCard per kelas ================= */}
       {classesQuery.isPending ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
             <ClassStatCard key={i} loading formatCurrency={formatCurrency} />
           ))}
@@ -705,7 +705,7 @@ export default function AssetsView() {
         />
       ) : classes.length > 0 ? (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             {classes.slice(0, 5).map((row) => (
               <ClassStatCard key={row.class} row={row} formatCurrency={formatCurrency} />
             ))}
@@ -822,7 +822,7 @@ export default function AssetsView() {
             />
           </div>
         ) : (
-          <div className="max-h-[560px] overflow-y-auto scrollbar-thin">
+          <div className="max-h-[560px] overflow-auto scrollbar-thin">
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
                 <TableRow className="hover:bg-transparent">
