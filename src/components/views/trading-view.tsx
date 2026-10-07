@@ -1,14 +1,16 @@
 "use client";
 
 // ============================================================
-// Trading — Task 2-b
-// StatCards (PnL/WinRate/Aktif/Trade30d) · Kartu Strategi
-// (owner: pause/resume) · Performance Attribution (BarChart)
-// Log Eksekusi (tabel + filter) · Alert Sinyal Terpusat
+// Trading — Task 2-b + S-b
+// Tabs: "Strategi & Eksekusi" (StatCards, Kartu Strategi,
+// Performance Attribution, Log Eksekusi, Alert) |
+// "Paper Trading" (sandbox $100k, order pasar live, posisi,
+// riwayat, reset — RBAC: owner CRUD, advisor/beneficiary read)
 // ============================================================
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { motion } from "framer-motion";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatDateTime, formatNumber, formatPct, timeAgo } from "@/lib/format";
 import { useAppStore } from "@/lib/store";
@@ -20,6 +22,7 @@ import {
   LoadingRows,
   ErrorBox,
   AlertLevelBadge,
+  ConfirmButton,
   useFormatCurrency,
 } from "@/components/shared/kit";
 import type {
@@ -49,6 +52,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Bar,
   BarChart,
@@ -69,6 +75,13 @@ import {
   Pause,
   Play,
   Loader2,
+  FlaskConical,
+  Wallet,
+  Landmark,
+  ArrowDownLeft,
+  ArrowUpRight,
+  RotateCcw,
+  Zap,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -140,6 +153,540 @@ function daysAgo(iso: string | null | undefined): number {
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return Infinity;
   return Math.floor((Date.now() - t) / 86_400_000);
+}
+
+// ------------------------------------------------------------
+// Paper Trading (Task S-b) — sandbox virtual $100,000
+// ------------------------------------------------------------
+
+interface PaperPosition {
+  symbol: string;
+  qty: number;
+  avgPriceUsd: number;
+  currentPriceUsd: number;
+  valueUsd: number;
+  unrealizedPnlUsd: number;
+}
+
+interface PaperAccount {
+  cashUsd: number;
+  realizedPnlUsd: number;
+  equityUsd: number;
+  positions: PaperPosition[];
+}
+
+interface PaperTrade {
+  id: string | number;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  priceUsd: number;
+  realizedPnlUsd: number | null;
+  at: string;
+}
+
+interface PaperSymbolInfo {
+  symbol: string;
+  usd: number;
+  change24hPct: number;
+}
+
+/** Pola focus-visible konsisten (polish S-b) — terapkan ke kontrol utama */
+export const focusRing =
+  "focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2";
+
+function errMsg(err: unknown): string {
+  return err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi";
+}
+
+function PaperSideBadge({ side }: { side: "buy" | "sell" }) {
+  const isBuy = side === "buy";
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        isBuy
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+          : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+      )}
+    >
+      {isBuy ? "Beli" : "Jual"}
+    </Badge>
+  );
+}
+
+function PnlText({ usd, className }: { usd: number | null | undefined; className?: string }) {
+  const formatCurrency = useFormatCurrency();
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) {
+    return <span className={cn("text-muted-foreground", className)}>—</span>;
+  }
+  return (
+    <span
+      className={cn(
+        "tabular-nums",
+        usd > 0 && "text-emerald-600 dark:text-emerald-400",
+        usd < 0 && "text-rose-600 dark:text-rose-400",
+        className,
+      )}
+    >
+      {usd > 0 ? "+" : ""}
+      {formatCurrency(usd)}
+    </span>
+  );
+}
+
+// ----------------------------------------------------------
+// Panel Paper Trading — Tab kedua
+// ----------------------------------------------------------
+function PaperTradingPanel() {
+  const queryClient = useQueryClient();
+  const user = useAppStore((s) => s.user);
+  const isOwner = user?.role === "owner";
+  const formatCurrency = useFormatCurrency();
+
+  // ---------- Queries ----------
+  const accountQ = useQuery<PaperAccount, ApiError>({
+    queryKey: ["paper", "account"],
+    queryFn: () => apiFetch<PaperAccount>("/trading/paper/account"),
+    refetchInterval: 30_000, // harga live — posisi bergerak
+    staleTime: 25_000,
+  });
+
+  const tradesQ = useQuery<PaperTrade[], ApiError>({
+    queryKey: ["paper", "trades"],
+    queryFn: () =>
+      apiFetch<PaperTrade[]>("/trading/paper/trades", { params: { limit: 100 } }),
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+
+  // Simbol + harga live untuk form order (endpoint existing /market/symbols)
+  const symbolsQ = useQuery<PaperSymbolInfo[], ApiError>({
+    queryKey: ["market", "symbols"],
+    queryFn: () => apiFetch<PaperSymbolInfo[]>("/market/symbols"),
+    staleTime: 30_000,
+    enabled: isOwner,
+  });
+
+  // ---------- Form order (owner) ----------
+  const [symbol, setSymbol] = React.useState("");
+  const [side, setSide] = React.useState<"buy" | "sell">("buy");
+  const [qty, setQty] = React.useState("");
+
+  const qtyNum = Number(qty.replace(",", "."));
+  const qtyValid = qty.trim() !== "" && Number.isFinite(qtyNum) && qtyNum > 0;
+  const priceOf = (sym: string) =>
+    symbolsQ.data?.find((s) => s.symbol === sym)?.usd ?? null;
+  const estUsd = symbol && qtyValid ? (priceOf(symbol) ?? 0) * qtyNum : null;
+  const heldQty =
+    accountQ.data?.positions.find((p) => p.symbol === symbol)?.qty ?? null;
+
+  const invalidatePaper = React.useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["paper", "account"] });
+    void queryClient.invalidateQueries({ queryKey: ["paper", "trades"] });
+  }, [queryClient]);
+
+  const orderM = useMutation({
+    mutationFn: (body: { symbol: string; side: "buy" | "sell"; qty: number }) =>
+      apiFetch<PaperAccount>("/trading/paper/orders", { method: "POST", body }),
+    onSuccess: (_acc, vars) => {
+      toast.success(
+        `Order ${vars.side === "buy" ? "beli" : "jual"} ${vars.qty} ${vars.symbol} tereksekusi`,
+        { description: "Fill harga pasar live di akun sandbox." },
+      );
+      setQty("");
+      invalidatePaper();
+    },
+    onError: (err) => {
+      toast.error("Order ditolak", { description: errMsg(err) });
+    },
+  });
+
+  const resetM = useMutation({
+    mutationFn: () => apiFetch<PaperAccount>("/trading/paper/reset", { method: "POST" }),
+    onSuccess: () => {
+      toast.success("Akun virtual direset", {
+        description: "Saldo kembali ke $100,000 — posisi & riwayat dibersihkan.",
+      });
+      setQty("");
+      invalidatePaper();
+    },
+    onError: (err) => {
+      toast.error("Gagal mereset akun virtual", { description: errMsg(err) });
+    },
+  });
+
+  const submitOrder = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!symbol) {
+      toast.error("Pilih simbol terlebih dahulu");
+      return;
+    }
+    if (!qtyValid) {
+      toast.error("Jumlah (qty) harus lebih dari 0");
+      return;
+    }
+    orderM.mutate({ symbol, side, qty: qtyNum });
+  };
+
+  // ---------- Derived ----------
+  const account = accountQ.data ?? null;
+  const positions = account?.positions ?? [];
+  const unrealizedTotal = positions.reduce(
+    (acc, p) => acc + (p.unrealizedPnlUsd ?? 0),
+    0,
+  );
+  const paperTrades = React.useMemo(() => {
+    const rows = tradesQ.data ?? [];
+    return [...rows].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  }, [tradesQ.data]);
+
+  const isForbidden =
+    accountQ.error instanceof ApiError && accountQ.error.status === 403;
+
+  const errBox = (q: { error: unknown; refetch: () => void }) => (
+    <ErrorBox message={errMsg(q.error)} onRetry={() => q.refetch()} />
+  );
+
+  // Executor & gagal total → tampilkan error / akses terbatas
+  if (accountQ.isError && !accountQ.data) {
+    return (
+      <div className="space-y-6">
+        {isForbidden ? (
+          <EmptyState
+            icon={<FlaskConical className="h-6 w-6" />}
+            title="Akses terbatas"
+            description="Paper trading hanya tersedia untuk owner, advisor, dan beneficiary."
+          />
+        ) : (
+          errBox(accountQ)
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* ---------- Banner sandbox + reset ---------- */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+          <Badge
+            variant="outline"
+            className="shrink-0 border-amber-500/50 bg-amber-500/10 font-semibold tracking-wide text-amber-700 dark:text-amber-400"
+          >
+            <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
+            SANDBOX — uang virtual $100,000
+          </Badge>
+          <span className="hidden text-xs text-amber-700/80 dark:text-amber-400/80 md:inline">
+            Order terisi dengan harga pasar live — tanpa risiko nyata.
+          </span>
+        </div>
+        {isOwner && (
+          <ConfirmButton
+            variant="outline"
+            confirmLabel="Yakin? Klik lagi"
+            className="min-h-[36px] shrink-0 border-rose-500/40 text-rose-600 dark:text-rose-400"
+            onConfirm={() => resetM.mutate()}
+            disabled={resetM.isPending}
+            title="Kembalikan akun sandbox ke $100,000"
+          >
+            {resetM.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            )}
+            Reset Akun Virtual
+          </ConfirmButton>
+        )}
+      </div>
+
+      {/* ---------- StatCards akun sandbox ---------- */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          loading={accountQ.isPending && !account}
+          label="Virtual Cash"
+          value={account ? formatCurrency(account.cashUsd) : "—"}
+          sub="kas bebas sandbox"
+          icon={<Wallet className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={accountQ.isPending && !account}
+          label="Total Equity"
+          value={account ? formatCurrency(account.equityUsd) : "—"}
+          sub="kas + nilai seluruh posisi"
+          icon={<Landmark className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={accountQ.isPending && !account}
+          label="Realized PnL"
+          value={
+            account ? (
+              <PnlText usd={account.realizedPnlUsd} />
+            ) : (
+              "—"
+            )
+          }
+          sub="dari posisi yang sudah ditutup"
+          icon={<ArrowDownLeft className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={accountQ.isPending && !account}
+          label="Unrealized PnL"
+          value={
+            account ? (
+              <PnlText usd={unrealizedTotal} />
+            ) : (
+              "—"
+            )
+          }
+          sub={`${positions.length} posisi terbuka`}
+          accent={unrealizedTotal < 0 ? "rose" : "default"}
+          icon={<ArrowUpRight className="h-5 w-5" />}
+        />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-3">
+        {/* ---------- Form order (owner) ---------- */}
+        {isOwner && (
+          <SectionCard
+            title="Order Pasar"
+            description="Eksekusi instan di harga live — akun sandbox"
+          >
+            <form onSubmit={submitOrder} className="space-y-4" noValidate>
+              <div className="grid gap-1.5">
+                <Label htmlFor="paper-symbol">Simbol</Label>
+                <Select value={symbol} onValueChange={setSymbol}>
+                  <SelectTrigger
+                    id="paper-symbol"
+                    className={cn("w-full", focusRing)}
+                    aria-label="Pilih simbol"
+                  >
+                    <SelectValue placeholder="Pilih simbol" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {(symbolsQ.data ?? []).map((s) => (
+                      <SelectItem key={s.symbol} value={s.symbol}>
+                        <span className="font-mono text-xs font-semibold">{s.symbol}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {" "}· {formatCurrency(s.usd)}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label>Side</Label>
+                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Arah order">
+                  <Button
+                    type="button"
+                    onClick={() => setSide("buy")}
+                    aria-pressed={side === "buy"}
+                    className={cn(
+                      focusRing,
+                      "h-10 border",
+                      side === "buy"
+                        ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700"
+                        : "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400",
+                    )}
+                  >
+                    <ArrowDownLeft className="h-4 w-4" aria-hidden="true" />
+                    Beli
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => setSide("sell")}
+                    aria-pressed={side === "sell"}
+                    className={cn(
+                      focusRing,
+                      "h-10 border",
+                      side === "sell"
+                        ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-700"
+                        : "border-rose-500/40 bg-rose-500/5 text-rose-700 hover:bg-rose-500/15 dark:text-rose-400",
+                    )}
+                  >
+                    <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+                    Jual
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="paper-qty">Jumlah (qty)</Label>
+                <Input
+                  id="paper-qty"
+                  type="number"
+                  step="any"
+                  min="0"
+                  inputMode="decimal"
+                  placeholder="cth. 0.05"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                  className={cn("h-10", focusRing)}
+                  disabled={orderM.isPending}
+                />
+                <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
+                  <span>
+                    {side === "sell" && heldQty !== null
+                      ? `Tersedia: ${heldQty} ${symbol}`
+                      : symbol
+                        ? `Harga: ${priceOf(symbol) !== null ? formatCurrency(priceOf(symbol) ?? 0) : "—"}`
+                        : "Pilih simbol untuk melihat harga live"}
+                  </span>
+                  {estUsd !== null && (
+                    <span className="font-medium tabular-nums">
+                      ≈ {formatCurrency(estUsd)}
+                    </span>
+                  )}
+                </div>
+                {qty.trim() !== "" && !qtyValid && (
+                  <p className="text-xs font-medium text-rose-600 dark:text-rose-400">
+                    Jumlah harus angka lebih dari 0.
+                  </p>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                className={cn(
+                  focusRing,
+                  "h-11 w-full bg-emerald-600 text-white hover:bg-emerald-700",
+                )}
+                disabled={orderM.isPending || !symbol || !qtyValid}
+              >
+                {orderM.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Zap className="h-4 w-4" aria-hidden="true" />
+                )}
+                Eksekusi Order Pasar
+              </Button>
+            </form>
+          </SectionCard>
+        )}
+
+        {/* ---------- Posisi Terbuka ---------- */}
+        <SectionCard
+          title="Posisi Terbuka"
+          description="Harga diperbarui otomatis tiap 30 detik"
+          className={isOwner ? "xl:col-span-2" : "xl:col-span-3"}
+        >
+          {accountQ.isError ? (
+            errBox(accountQ)
+          ) : accountQ.isPending && !account ? (
+            <LoadingRows rows={3} />
+          ) : positions.length === 0 ? (
+            <EmptyState
+              icon={<Bot className="h-6 w-6" />}
+              title="Belum ada posisi"
+              description={
+                isOwner
+                  ? "Eksekusi order beli pertama Anda untuk membuka posisi sandbox."
+                  : "Owner belum membuka posisi paper trading."
+              }
+            />
+          ) : (
+            <div className="max-h-80 overflow-y-auto rounded-lg border">
+              <Table>
+                <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
+                  <TableRow>
+                    <TableHead>Simbol</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Harga Rata²</TableHead>
+                    <TableHead className="text-right">Harga Kini</TableHead>
+                    <TableHead className="text-right">Nilai</TableHead>
+                    <TableHead className="text-right">Unrealized PnL</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {positions.map((p) => (
+                    <TableRow key={p.symbol}>
+                      <TableCell className="font-mono text-xs font-bold">{p.symbol}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {p.qty}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(p.avgPriceUsd)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(p.currentPriceUsd)}
+                      </TableCell>
+                      <TableCell className="text-right font-medium tabular-nums">
+                        {formatCurrency(p.valueUsd)}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold">
+                        <PnlText usd={p.unrealizedPnlUsd} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          {!isOwner && !accountQ.isError && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Mode lihat-saja — eksekusi order &amp; reset hanya untuk owner.
+            </p>
+          )}
+        </SectionCard>
+      </div>
+
+      {/* ---------- Riwayat Trade ---------- */}
+      <SectionCard
+        title="Riwayat Trade"
+        description="100 eksekusi terakhir di akun sandbox"
+      >
+        {tradesQ.isError ? (
+          errBox(tradesQ)
+        ) : tradesQ.isPending && paperTrades.length === 0 ? (
+          <LoadingRows rows={4} />
+        ) : paperTrades.length === 0 ? (
+          <EmptyState
+            icon={<Activity className="h-6 w-6" />}
+            title="Belum ada trade"
+            description="Riwayat eksekusi order sandbox akan tampil di sini."
+          />
+        ) : (
+          <div className="max-h-96 overflow-y-auto rounded-lg border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
+                <TableRow>
+                  <TableHead className="w-[150px]">Waktu</TableHead>
+                  <TableHead>Side</TableHead>
+                  <TableHead>Simbol</TableHead>
+                  <TableHead className="text-right">Qty</TableHead>
+                  <TableHead className="text-right">Harga</TableHead>
+                  <TableHead className="text-right">Realized PnL</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paperTrades.map((t) => (
+                  <TableRow key={String(t.id)}>
+                    <TableCell className="tabular-nums">
+                      <div className="font-medium">{formatDateTime(t.at)}</div>
+                      <div className="text-xs text-muted-foreground">{timeAgo(t.at)}</div>
+                    </TableCell>
+                    <TableCell>
+                      <PaperSideBadge side={t.side} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs font-semibold">{t.symbol}</TableCell>
+                    <TableCell className="text-right tabular-nums">{t.qty}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(t.priceUsd)}
+                    </TableCell>
+                    <TableCell className="text-right font-semibold">
+                      <PnlText usd={t.realizedPnlUsd} />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
 }
 
 // ------------------------------------------------------------
@@ -267,8 +814,29 @@ export default function TradingView() {
     <div className="space-y-6">
       <PageHeader
         title="Trading"
-        subtitle="Strategi otomatis, trade log, performa, dan alert eksekusi."
+        subtitle="Strategi otomatis, paper trading sandbox, dan alert eksekusi."
       />
+
+      <Tabs defaultValue="strategi" className="gap-6">
+        <TabsList className="h-10 p-1">
+          <TabsTrigger value="strategi" className={cn("px-4", focusRing)}>
+            <Bot className="h-4 w-4" aria-hidden="true" />
+            Strategi &amp; Eksekusi
+          </TabsTrigger>
+          <TabsTrigger value="paper" className={cn("px-4", focusRing)}>
+            <FlaskConical className="h-4 w-4" aria-hidden="true" />
+            Paper Trading
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ================= Tab 1: Strategi & Eksekusi ================= */}
+        <TabsContent value="strategi" className="mt-2 outline-none">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            className="space-y-6"
+          >
 
       {/* ---------- Error banner ---------- */}
       {strategiesQuery.isError && !strategiesQuery.data && errBox(strategiesQuery)}
@@ -322,7 +890,7 @@ export default function TradingView() {
         {strategiesQuery.isPending ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-busy="true">
             {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-44 rounded-xl" />
+              <Skeleton key={i} className="zfo-shimmer h-44 rounded-xl" />
             ))}
           </div>
         ) : strategiesQuery.isError ? (
@@ -439,7 +1007,7 @@ export default function TradingView() {
           className="xl:col-span-2"
         >
           {perfQuery.isPending ? (
-            <Skeleton className="h-[280px] w-full rounded-lg" aria-label="Memuat grafik atribusi" />
+            <Skeleton className="zfo-shimmer h-[280px] w-full rounded-lg" aria-label="Memuat grafik atribusi" />
           ) : perfQuery.isError ? (
             errBox(perfQuery)
           ) : perfChart.length === 0 ? (
@@ -681,6 +1249,20 @@ export default function TradingView() {
           </ul>
         )}
       </SectionCard>
+          </motion.div>
+        </TabsContent>
+
+        {/* ================= Tab 2: Paper Trading (sandbox) ================= */}
+        <TabsContent value="paper" className="mt-2 outline-none">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+          >
+            <PaperTradingPanel />
+          </motion.div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

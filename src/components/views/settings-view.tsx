@@ -51,6 +51,7 @@ import {
 import {
   AlertTriangle,
   Check,
+  Copy,
   DatabaseBackup,
   Download,
   Info,
@@ -61,6 +62,7 @@ import {
   PieChart,
   ShieldCheck,
   Siren,
+  Smartphone,
   Sun,
 } from "lucide-react";
 
@@ -89,6 +91,20 @@ const DEFAULT_TARGETS: AllocationTarget = {
 function numOr(v: unknown, fallback: number): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** Pola focus-visible konsisten (polish S-b) */
+const focusRing =
+  "focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2";
+
+interface MfaStatus {
+  enabled: boolean;
+  hasSecret: boolean;
+}
+
+interface MfaSetup {
+  secret: string;
+  otpauthUrl: string;
 }
 
 // ------------------------------------------------------------
@@ -159,7 +175,7 @@ const ROADMAP: { code: string; name: string; features: { label: string; live: bo
       { label: "RBAC enforced di backend", live: true },
       { label: "Audit trail login & mutasi", live: true },
       { label: "Simulasi 2FA", live: true },
-      { label: "TOTP / hardware key asli", live: false },
+      { label: "MFA TOTP (authenticator app)", live: true },
       { label: "Enkripsi at-rest penuh + HSM", live: false },
       { label: "Device pairing & SSO", live: false },
       { label: "Audit keamanan eksternal (SOC2-style)", live: false },
@@ -332,6 +348,80 @@ export default function SettingsView() {
         description: `family-office-export-*.json · ${(size / 1024).toFixed(1)} KB`,
       }),
     onError: (e) => toast.error("Gagal mengekspor data", { description: errMsg(e) }),
+  });
+
+  // ---------- MFA — Autentikasi Dua Faktor (Task S-b) ----------
+  const mfaStatusQ = useQuery<MfaStatus, ApiError>({
+    queryKey: ["auth", "mfa", "status"],
+    queryFn: () => apiFetch<MfaStatus>("/auth/mfa/status"),
+    staleTime: 30_000,
+  });
+  const mfaEnabled = mfaStatusQ.data?.enabled === true;
+
+  const [setupOpen, setSetupOpen] = React.useState(false);
+  const [setupData, setSetupData] = React.useState<MfaSetup | null>(null);
+  const [setupCode, setSetupCode] = React.useState("");
+  const [copied, setCopied] = React.useState(false);
+
+  const mfaSetupM = useMutation({
+    mutationFn: () => apiFetch<MfaSetup>("/auth/mfa/setup", { method: "POST" }),
+    onSuccess: (d) => setSetupData(d),
+    onError: (e) => {
+      toast.error("Gagal menyiapkan MFA", { description: errMsg(e) });
+      setSetupOpen(false);
+    },
+  });
+
+  const openSetup = () => {
+    setSetupData(null);
+    setSetupCode("");
+    setCopied(false);
+    setSetupOpen(true);
+    mfaSetupM.mutate();
+  };
+
+  const copySecret = async () => {
+    if (!setupData?.secret) return;
+    try {
+      await navigator.clipboard.writeText(setupData.secret);
+      setCopied(true);
+      toast.success("Secret disalin ke clipboard");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Gagal menyalin — salin manual dari teks secret");
+    }
+  };
+
+  const mfaEnableM = useMutation({
+    mutationFn: (code: string) =>
+      apiFetch<unknown>("/auth/mfa/enable", { method: "POST", body: { code } }),
+    onSuccess: () => {
+      toast.success("MFA diaktifkan", {
+        description: "Login berikutnya akan meminta kode authenticator.",
+      });
+      setSetupOpen(false);
+      setSetupCode("");
+      setSetupData(null);
+      void qc.invalidateQueries({ queryKey: ["auth", "mfa"] });
+    },
+    onError: (e) => toast.error("Kode ditolak", { description: errMsg(e) }),
+  });
+
+  const [disableOpen, setDisableOpen] = React.useState(false);
+  const [disableCode, setDisableCode] = React.useState("");
+
+  const mfaDisableM = useMutation({
+    mutationFn: (code: string) =>
+      apiFetch<unknown>("/auth/mfa/disable", { method: "POST", body: { code } }),
+    onSuccess: () => {
+      toast.success("MFA dinonaktifkan", {
+        description: "Login tidak lagi meminta kode authenticator.",
+      });
+      setDisableOpen(false);
+      setDisableCode("");
+      void qc.invalidateQueries({ queryKey: ["auth", "mfa"] });
+    },
+    onError: (e) => toast.error("Kode ditolak", { description: errMsg(e) }),
   });
 
   return (
@@ -582,6 +672,107 @@ export default function SettingsView() {
         </Card>
       </SectionCard>
 
+      {/* ================= Autentikasi Dua Faktor (MFA) ================= */}
+      <SectionCard
+        title="Autentikasi Dua Faktor (MFA)"
+        description="Lapisan TOTP untuk login — setiap pengguna mengelola MFA miliknya sendiri"
+        actions={
+          mfaStatusQ.isPending ? (
+            <Badge variant="outline" className="text-muted-foreground">
+              Memeriksa status…
+            </Badge>
+          ) : mfaStatusQ.isError ? (
+            <Badge
+              variant="outline"
+              className="border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+            >
+              Status tidak tersedia
+            </Badge>
+          ) : mfaEnabled ? (
+            <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+              <ShieldCheck className="h-3 w-3" aria-hidden="true" /> Aktif
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300"
+            >
+              Nonaktif
+            </Badge>
+          )
+        }
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span
+              className={cn(
+                "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+                mfaEnabled
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-zinc-500/10 text-zinc-500 dark:text-zinc-400",
+              )}
+              aria-hidden="true"
+            >
+              <Smartphone className="h-5 w-5" />
+            </span>
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">
+                {mfaEnabled
+                  ? "Akun Anda dilindungi kode authenticator (TOTP)"
+                  : "Tambahkan lapisan keamanan ekstra di login"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {mfaEnabled
+                  ? "Setiap login meminta kode 6 digit dari aplikasi authenticator setelah email & password benar."
+                  : "Setelah aktif, login meminta kode 6 digit dari aplikasi authenticator (Google Authenticator, Authy, dsb.)."}
+              </p>
+              {mfaStatusQ.isError && (
+                <p className="text-xs text-rose-600 dark:text-rose-400">
+                  Gagal memuat status MFA — {errMsg(mfaStatusQ.error)}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            {mfaEnabled ? (
+              <Button
+                type="button"
+                variant="outline"
+                className={cn(
+                  focusRing,
+                  "min-h-[40px] border-rose-500/40 text-rose-600 dark:text-rose-400",
+                )}
+                onClick={() => {
+                  setDisableCode("");
+                  setDisableOpen(true);
+                }}
+              >
+                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                Nonaktifkan MFA
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                className={cn(
+                  focusRing,
+                  "min-h-[40px] bg-emerald-600 text-white hover:bg-emerald-700",
+                )}
+                onClick={openSetup}
+                disabled={mfaSetupM.isPending}
+              >
+                {mfaSetupM.isPending && setupOpen ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                )}
+                Aktifkan MFA
+              </Button>
+            )}
+          </div>
+        </div>
+      </SectionCard>
+
       {/* ================= Data & Portabilitas ================= */}
       <SectionCard title="Data & Portabilitas" description="Ekspor seluruh data platform dalam format JSON">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -675,6 +866,160 @@ export default function SettingsView() {
           menyusul pada fase berikutnya sesuai PRD (Fase 0–4).
         </p>
       </SectionCard>
+
+      {/* ================= Dialog: Aktifkan MFA (setup) ================= */}
+      <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto scrollbar-thin sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              Aktifkan Autentikasi Dua Faktor
+            </DialogTitle>
+            <DialogDescription>
+              Tambahkan secret ke aplikasi authenticator (Google Authenticator, Authy), lalu masukkan
+              kode 6 digit yang muncul untuk konfirmasi.
+            </DialogDescription>
+          </DialogHeader>
+
+          {mfaSetupM.isPending || !setupData ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Menyiapkan secret…
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="mfa-secret">Secret</Label>
+                <div className="flex items-center gap-2">
+                  <code
+                    id="mfa-secret"
+                    className="min-w-0 flex-1 truncate rounded-lg border bg-muted px-3 py-2 font-mono text-sm tracking-wider"
+                  >
+                    {setupData.secret}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(focusRing, "h-9 shrink-0")}
+                    onClick={() => void copySecret()}
+                  >
+                    {copied ? (
+                      <Check className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Copy className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    {copied ? "Tersalin" : "Salin"}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Tautan otpauth://</Label>
+                <a
+                  href={setupData.otpauthUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cn(
+                    focusRing,
+                    "block truncate rounded-lg border px-3 py-2 font-mono text-xs text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400",
+                  )}
+                  title={setupData.otpauthUrl}
+                >
+                  {setupData.otpauthUrl}
+                </a>
+                <p className="text-xs text-muted-foreground">
+                  Buka tautan di perangkat ini untuk menambahkan akun otomatis ke aplikasi
+                  authenticator.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="mfa-enable-code">
+                  Masukkan kode 6 digit dari aplikasi authenticator
+                </Label>
+                <Input
+                  id="mfa-enable-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="000000"
+                  value={setupCode}
+                  onChange={(e) => setSetupCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  className={cn(focusRing, "text-center font-mono text-lg tracking-[0.4em]")}
+                  disabled={mfaEnableM.isPending}
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setSetupOpen(false)}
+              disabled={mfaEnableM.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              className={cn(focusRing, "bg-emerald-600 text-white hover:bg-emerald-700")}
+              disabled={mfaSetupM.isPending || !setupData || setupCode.length !== 6 || mfaEnableM.isPending}
+              onClick={() => mfaEnableM.mutate(setupCode)}
+            >
+              {mfaEnableM.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+              Aktifkan MFA
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ================= Dialog: Nonaktifkan MFA ================= */}
+      <Dialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+              <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+              Nonaktifkan Autentikasi Dua Faktor?
+            </DialogTitle>
+            <DialogDescription>
+              Akun Anda hanya dilindungi email &amp; password. Masukkan kode 6 digit dari aplikasi
+              authenticator untuk konfirmasi.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
+            placeholder="000000"
+            value={disableCode}
+            onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            className={cn(focusRing, "text-center font-mono text-lg tracking-[0.4em]")}
+            disabled={mfaDisableM.isPending}
+            aria-label="Kode authenticator untuk konfirmasi nonaktif"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDisableOpen(false)}
+              disabled={mfaDisableM.isPending}
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={disableCode.length !== 6 || mfaDisableM.isPending}
+              onClick={() => mfaDisableM.mutate(disableCode)}
+            >
+              {mfaDisableM.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+              Nonaktifkan MFA
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ================= Dialog konfirmasi PANIC ================= */}
       <Dialog open={panicOpen} onOpenChange={setPanicOpen}>

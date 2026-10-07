@@ -13,7 +13,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, apiGetBlob, ApiError } from "@/lib/api";
 import { formatNumber, formatDate, timeAgo } from "@/lib/format";
 import {
   useFormatCurrency,
@@ -64,6 +64,7 @@ import {
   ArrowLeftRight,
   Scale,
   Info,
+  Download,
   type LucideIcon,
 } from "lucide-react";
 
@@ -481,12 +482,42 @@ function TxFormDialog({
 export default function TransactionsView() {
   const user = useAppStore((s) => s.user);
   const isOwner = user?.role === "owner";
+  // Ekspor CSV: owner & advisor (S-b)
+  const canExportCsv = user?.role === "owner" || user?.role === "advisor";
   const formatCurrency = useFormatCurrency();
 
   // ---------- filter state ----------
   const [typeFilter, setTypeFilter] = React.useState("all");
   const [assetFilter, setAssetFilter] = React.useState("all");
   const [formOpen, setFormOpen] = React.useState(false);
+
+  // ---------- Ekspor CSV (Task S-b) ----------
+  const exportCsvM = useMutation({
+    mutationFn: async () => {
+      const blob = await apiGetBlob("/transactions/export.csv");
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+        now.getDate(),
+      ).padStart(2, "0")}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `transaksi-${stamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return blob.size;
+    },
+    onSuccess: (size) =>
+      toast.success("Ekspor CSV berhasil diunduh", {
+        description: `transaksi-*.csv · ${(size / 1024).toFixed(1)} KB`,
+      }),
+    onError: (e) =>
+      toast.error("Gagal mengekspor CSV", {
+        description: e instanceof ApiError ? e.message : "Backend belum terjangkau — mencoba lagi",
+      }),
+  });
 
   // ---------- queries ----------
   const assetsQuery = useQuery<Asset[], ApiError>({
@@ -595,15 +626,36 @@ export default function TransactionsView() {
           </Select>
         </div>
 
-        {isOwner && (
-          <Button
-            type="button"
-            onClick={() => setFormOpen(true)}
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Catat Transaksi
-          </Button>
+        {(isOwner || canExportCsv) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {canExportCsv && (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-[40px]"
+                onClick={() => exportCsvM.mutate()}
+                disabled={exportCsvM.isPending}
+                title="Unduh seluruh riwayat transaksi sebagai file CSV"
+              >
+                {exportCsvM.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="h-4 w-4" aria-hidden="true" />
+                )}
+                Ekspor CSV
+              </Button>
+            )}
+            {isOwner && (
+              <Button
+                type="button"
+                onClick={() => setFormOpen(true)}
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Catat Transaksi
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

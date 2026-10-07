@@ -51,9 +51,11 @@ def _b64d(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + pad)
 
 
-def sign_token(payload: dict, ttl_hours: int = TOKEN_TTL_HOURS) -> str:
+def sign_token(payload: dict, ttl_hours: int = TOKEN_TTL_HOURS,
+               ttl_seconds: int = None) -> str:
     body = dict(payload)
-    body["exp"] = int(time.time()) + ttl_hours * 3600
+    ttl = int(ttl_seconds) if ttl_seconds is not None else int(ttl_hours * 3600)
+    body["exp"] = int(time.time()) + ttl
     raw = _b64e(json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     sig = hmac.new(_load_secret(), raw.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{raw}.{sig}"
@@ -86,6 +88,10 @@ def require_auth(*roles: str):
         payload = verify_token(creds.credentials)
         if not payload:
             raise ApiError(401, "Token tidak valid atau kedaluwarsa")
+        if payload.get("kind") == "mfa":
+            # Challenge token MFA hanya berlaku untuk POST /auth/mfa/verify —
+            # tidak boleh dipakai sebagai sesi di endpoint biasa.
+            raise ApiError(401, "Challenge MFA bukan token sesi — selesaikan verifikasi MFA dulu")
         if roles and payload.get("role") not in roles:
             raise ApiError(403, f"Akses ditolak untuk peran '{payload.get('role')}'")
         return payload

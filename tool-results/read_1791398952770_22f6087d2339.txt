@@ -1,0 +1,687 @@
+     1→"use client";
+     2→
+     3→// ============================================================
+     4→// Trading — Task 2-b
+     5→// StatCards (PnL/WinRate/Aktif/Trade30d) · Kartu Strategi
+     6→// (owner: pause/resume) · Performance Attribution (BarChart)
+     7→// Log Eksekusi (tabel + filter) · Alert Sinyal Terpusat
+     8→// ============================================================
+     9→import * as React from "react";
+    10→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    11→import { toast } from "sonner";
+    12→import { apiFetch, ApiError } from "@/lib/api";
+    13→import { formatDateTime, formatNumber, formatPct, timeAgo } from "@/lib/format";
+    14→import { useAppStore } from "@/lib/store";
+    15→import {
+    16→  StatCard,
+    17→  PageHeader,
+    18→  SectionCard,
+    19→  EmptyState,
+    20→  LoadingRows,
+    21→  ErrorBox,
+    22→  AlertLevelBadge,
+    23→  useFormatCurrency,
+    24→} from "@/components/shared/kit";
+    25→import type {
+    26→  AlertItem,
+    27→  Strategy,
+    28→  StrategyPerformance,
+    29→  StrategyStatus,
+    30→  Trade,
+    31→} from "@/lib/types";
+    32→import { cn } from "@/lib/utils";
+    33→import { Button } from "@/components/ui/button";
+    34→import { Badge } from "@/components/ui/badge";
+    35→import { Card } from "@/components/ui/card";
+    36→import { Skeleton } from "@/components/ui/skeleton";
+    37→import {
+    38→  Select,
+    39→  SelectContent,
+    40→  SelectItem,
+    41→  SelectTrigger,
+    42→  SelectValue,
+    43→} from "@/components/ui/select";
+    44→import {
+    45→  Table,
+    46→  TableBody,
+    47→  TableCell,
+    48→  TableHead,
+    49→  TableHeader,
+    50→  TableRow,
+    51→} from "@/components/ui/table";
+    52→import {
+    53→  Bar,
+    54→  BarChart,
+    55→  CartesianGrid,
+    56→  Cell,
+    57→  ResponsiveContainer,
+    58→  Tooltip,
+    59→  XAxis,
+    60→  YAxis,
+    61→} from "recharts";
+    62→import {
+    63→  TrendingUp,
+    64→  Target,
+    65→  Activity,
+    66→  Clock,
+    67→  Bell,
+    68→  Bot,
+    69→  Pause,
+    70→  Play,
+    71→  Loader2,
+    72→} from "lucide-react";
+    73→
+    74→// ------------------------------------------------------------
+    75→// Helper kecil
+    76→// ------------------------------------------------------------
+    77→const STATUS_META: Record<
+    78→  StrategyStatus,
+    79→  { label: string; dot: string; badge: string; pulse: boolean }
+    80→> = {
+    81→  active: {
+    82→    label: "Aktif",
+    83→    dot: "bg-emerald-500",
+    84→    badge: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    85→    pulse: true,
+    86→  },
+    87→  paused: {
+    88→    label: "Dijeda",
+    89→    dot: "bg-amber-500",
+    90→    badge: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    91→    pulse: false,
+    92→  },
+    93→  archived: {
+    94→    label: "Arsip",
+    95→    dot: "bg-zinc-400",
+    96→    badge: "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+    97→    pulse: false,
+    98→  },
+    99→};
+   100→
+   101→function StrategyStatusBadge({ status }: { status: StrategyStatus }) {
+   102→  const meta = STATUS_META[status] ?? STATUS_META.archived;
+   103→  return (
+   104→    <Badge variant="outline" className={cn("gap-1.5", meta.badge)}>
+   105→      <span className="relative flex h-2 w-2" aria-hidden="true">
+   106→        {meta.pulse && (
+   107→          <span
+   108→            className={cn(
+   109→              "absolute inline-flex h-full w-full animate-ping rounded-full opacity-60",
+   110→              meta.dot,
+   111→            )}
+   112→          />
+   113→        )}
+   114→        <span className={cn("relative inline-flex h-2 w-2 rounded-full", meta.dot)} />
+   115→      </span>
+   116→      {meta.label}
+   117→    </Badge>
+   118→  );
+   119→}
+   120→
+   121→function SideBadge({ side }: { side: Trade["side"] }) {
+   122→  const isLong = side === "long" || side === "buy";
+   123→  return (
+   124→    <Badge
+   125→      variant="outline"
+   126→      className={cn(
+   127→        isLong
+   128→          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   129→          : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+   130→      )}
+   131→    >
+   132→      {isLong ? "Long" : "Short"}
+   133→    </Badge>
+   134→  );
+   135→}
+   136→
+   137→/** Jumlah hari sejak tanggal ISO */
+   138→function daysAgo(iso: string | null | undefined): number {
+   139→  if (!iso) return Infinity;
+   140→  const t = new Date(iso).getTime();
+   141→  if (Number.isNaN(t)) return Infinity;
+   142→  return Math.floor((Date.now() - t) / 86_400_000);
+   143→}
+   144→
+   145→// ------------------------------------------------------------
+   146→// TradingView
+   147→// ------------------------------------------------------------
+   148→export default function TradingView() {
+   149→  const queryClient = useQueryClient();
+   150→  const user = useAppStore((s) => s.user);
+   151→  const isOwner = user?.role === "owner";
+   152→  const formatCurrency = useFormatCurrency();
+   153→
+   154→  // ---------- Queries ----------
+   155→  const strategiesQuery = useQuery<Strategy[], ApiError>({
+   156→    queryKey: ["trading", "strategies"],
+   157→    queryFn: () => apiFetch<Strategy[]>("/trading/strategies"),
+   158→    refetchInterval: 60_000,
+   159→    staleTime: 50_000,
+   160→  });
+   161→
+   162→  const perfQuery = useQuery<StrategyPerformance[], ApiError>({
+   163→    queryKey: ["trading", "performance"],
+   164→    queryFn: () => apiFetch<StrategyPerformance[]>("/trading/performance"),
+   165→    refetchInterval: 60_000,
+   166→    staleTime: 50_000,
+   167→  });
+   168→
+   169→  const tradesAllQuery = useQuery<Trade[], ApiError>({
+   170→    queryKey: ["trading", "trades", "all"],
+   171→    queryFn: () => apiFetch<Trade[]>("/trading/trades", { params: { limit: 100 } }),
+   172→    refetchInterval: 60_000,
+   173→    staleTime: 50_000,
+   174→  });
+   175→
+   176→  const [strategyFilter, setStrategyFilter] = React.useState<string>("all");
+   177→
+   178→  const tradesQuery = useQuery<Trade[], ApiError>({
+   179→    queryKey: ["trading", "trades", strategyFilter],
+   180→    queryFn: () =>
+   181→      apiFetch<Trade[]>("/trading/trades", {
+   182→        params: {
+   183→          strategyId: strategyFilter === "all" ? undefined : strategyFilter,
+   184→          limit: 100,
+   185→        },
+   186→      }),
+   187→    staleTime: 50_000,
+   188→  });
+   189→
+   190→  const alertsQuery = useQuery<AlertItem[], ApiError>({
+   191→    queryKey: ["trading", "alerts"],
+   192→    queryFn: () => apiFetch<AlertItem[]>("/trading/alerts", { params: { limit: 30 } }),
+   193→    refetchInterval: 60_000,
+   194→    staleTime: 50_000,
+   195→  });
+   196→
+   197→  // ---------- Mutasi status strategi (owner) ----------
+   198→  const statusMutation = useMutation({
+   199→    mutationFn: ({ id, status }: { id: string; status: StrategyStatus }) =>
+   200→      apiFetch<Strategy>(`/trading/strategies/${id}`, {
+   201→        method: "PUT",
+   202→        body: { status },
+   203→      }),
+   204→    onSuccess: (updated) => {
+   205→      toast.success(
+   206→        `Strategi "${updated.name}" ${updated.status === "paused" ? "dijeda" : "diaktifkan"}`,
+   207→        { description: "Status strategi berhasil diperbarui." },
+   208→      );
+   209→      void queryClient.invalidateQueries({ queryKey: ["trading", "strategies"] });
+   210→      void queryClient.invalidateQueries({ queryKey: ["trading", "performance"] });
+   211→    },
+   212→    onError: (err) => {
+   213→      toast.error("Gagal mengubah status strategi", {
+   214→        description: err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi",
+   215→      });
+   216→    },
+   217→  });
+   218→
+   219→  // ---------- Derived ----------
+   220→  const strategies = strategiesQuery.data ?? [];
+   221→  const tradesAll = tradesAllQuery.data ?? [];
+   222→  const perf = perfQuery.data ?? [];
+   223→
+   224→  const totalPnl = strategies.reduce((acc, s) => acc + (s.pnlUsd ?? 0), 0);
+   225→  const activeCount = strategies.filter((s) => s.status === "active").length;
+   226→  const totalTradesWeight = strategies.reduce((acc, s) => acc + (s.tradeCount ?? 0), 0);
+   227→  const weightedWinRate =
+   228→    totalTradesWeight > 0
+   229→      ? strategies.reduce((acc, s) => acc + s.winRatePct * (s.tradeCount ?? 0), 0) /
+   230→        totalTradesWeight
+   231→      : null;
+   232→
+   233→  const cutoff30d = Date.now() - 30 * 24 * 60 * 60 * 1000;
+   234→  const trades30d = tradesAll.filter((t) => {
+   235→    const ts = new Date(t.closedAt ?? t.openedAt).getTime();
+   236→    return Number.isFinite(ts) && ts >= cutoff30d;
+   237→  }).length;
+   238→
+   239→  const tableTrades = React.useMemo(() => {
+   240→    const rows =
+   241→      strategyFilter === "all" ? tradesAll : (tradesQuery.data ?? tradesAll);
+   242→    return [...rows].sort((a, b) => {
+   243→      const ta = new Date(a.closedAt ?? a.openedAt).getTime();
+   244→      const tb = new Date(b.closedAt ?? b.openedAt).getTime();
+   245→      return tb - ta;
+   246→    });
+   247→  }, [strategyFilter, tradesAll, tradesQuery.data]);
+   248→
+   249→  const perfChart = React.useMemo(
+   250→    () =>
+   251→      [...perf]
+   252→        .sort((a, b) => b.pnlUsd - a.pnlUsd)
+   253→        .map((p) => ({ name: p.name, pnlUsd: p.pnlUsd })),
+   254→    [perf],
+   255→  );
+   256→
+   257→  const errBox = (q: { error: unknown; refetch: () => void }) => (
+   258→    <ErrorBox
+   259→      message={
+   260→        q.error instanceof ApiError ? q.error.message : "Backend belum terjangkau — mencoba lagi"
+   261→      }
+   262→      onRetry={() => q.refetch()}
+   263→    />
+   264→  );
+   265→
+   266→  return (
+   267→    <div className="space-y-6">
+   268→      <PageHeader
+   269→        title="Trading"
+   270→        subtitle="Strategi otomatis, trade log, performa, dan alert eksekusi."
+   271→      />
+   272→
+   273→      {/* ---------- Error banner ---------- */}
+   274→      {strategiesQuery.isError && !strategiesQuery.data && errBox(strategiesQuery)}
+   275→
+   276→      {/* ================= 1. StatCards ================= */}
+   277→      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+   278→        <StatCard
+   279→          loading={strategiesQuery.isPending}
+   280→          label="Total PnL"
+   281→          value={
+   282→            <span
+   283→              className={cn(
+   284→                totalPnl > 0 && "text-emerald-600 dark:text-emerald-400",
+   285→                totalPnl < 0 && "text-rose-600 dark:text-rose-400",
+   286→              )}
+   287→            >
+   288→              {strategiesQuery.isPending ? "—" : formatCurrency(totalPnl)}
+   289→            </span>
+   290→          }
+   291→          sub={`${strategies.length} strategi terdaftar`}
+   292→          icon={<TrendingUp className="h-5 w-5" />}
+   293→        />
+   294→        <StatCard
+   295→          loading={strategiesQuery.isPending}
+   296→          label="Win Rate"
+   297→          value={weightedWinRate !== null ? formatPct(weightedWinRate, false) : "—"}
+   298→          sub="rata-rata berbobot jumlah trade"
+   299→          icon={<Target className="h-5 w-5" />}
+   300→        />
+   301→        <StatCard
+   302→          loading={strategiesQuery.isPending}
+   303→          label="Strategi Aktif"
+   304→          value={`${activeCount}`}
+   305→          sub={`${strategies.length} total strategi`}
+   306→          icon={<Activity className="h-5 w-5" />}
+   307→        />
+   308→        <StatCard
+   309→          loading={tradesAllQuery.isPending}
+   310→          label="Trade 30 Hari"
+   311→          value={`${trades30d}`}
+   312→          sub="30 hari terakhir"
+   313→          icon={<Clock className="h-5 w-5" />}
+   314→        />
+   315→      </div>
+   316→
+   317→      {/* ================= 2. Strategi ================= */}
+   318→      <SectionCard
+   319→        title="Strategi"
+   320→        description="Bot & strategi trading lintas platform"
+   321→      >
+   322→        {strategiesQuery.isPending ? (
+   323→          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-busy="true">
+   324→            {Array.from({ length: 3 }).map((_, i) => (
+   325→              <Skeleton key={i} className="h-44 rounded-xl" />
+   326→            ))}
+   327→          </div>
+   328→        ) : strategiesQuery.isError ? (
+   329→          errBox(strategiesQuery)
+   330→        ) : strategies.length === 0 ? (
+   331→          <EmptyState
+   332→            icon={<Bot className="h-6 w-6" />}
+   333→            title="Belum ada strategi"
+   334→            description="Strategi trading yang terdaftar akan tampil di sini."
+   335→          />
+   336→        ) : (
+   337→          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+   338→            {strategies.map((s) => {
+   339→              const meta = STATUS_META[s.status] ?? STATUS_META.archived;
+   340→              const nextStatus: StrategyStatus | null =
+   341→                s.status === "active" ? "paused" : s.status === "paused" ? "active" : null;
+   342→              return (
+   343→                <Card key={s.id} className="rounded-xl p-5 flex flex-col gap-3">
+   344→                  <div className="flex items-start justify-between gap-2">
+   345→                    <div className="min-w-0 space-y-1">
+   346→                      <p className="truncate font-semibold leading-tight">{s.name}</p>
+   347→                      <Badge
+   348→                        variant="outline"
+   349→                        className="border-zinc-500/40 bg-zinc-500/10 text-[10px] uppercase tracking-wide text-zinc-600 dark:text-zinc-300"
+   350→                      >
+   351→                        {s.platform}
+   352→                      </Badge>
+   353→                    </div>
+   354→                    <StrategyStatusBadge status={s.status} />
+   355→                  </div>
+   356→
+   357→                  {s.description && (
+   358→                    <p className="line-clamp-2 text-sm text-muted-foreground">{s.description}</p>
+   359→                  )}
+   360→
+   361→                  <div className="grid grid-cols-3 gap-2 border-t pt-3 text-sm">
+   362→                    <div>
+   363→                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+   364→                        Win Rate
+   365→                      </p>
+   366→                      <p className="font-medium tabular-nums">
+   367→                        {formatPct(s.winRatePct, false)}
+   368→                      </p>
+   369→                    </div>
+   370→                    <div>
+   371→                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+   372→                        PnL
+   373→                      </p>
+   374→                      <p
+   375→                        className={cn(
+   376→                          "font-medium tabular-nums",
+   377→                          s.pnlUsd > 0 && "text-emerald-600 dark:text-emerald-400",
+   378→                          s.pnlUsd < 0 && "text-rose-600 dark:text-rose-400",
+   379→                        )}
+   380→                      >
+   381→                        {formatCurrency(s.pnlUsd, true)}
+   382→                      </p>
+   383→                    </div>
+   384→                    <div>
+   385→                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+   386→                        Trades
+   387→                      </p>
+   388→                      <p className="font-medium tabular-nums">{s.tradeCount}</p>
+   389→                    </div>
+   390→                  </div>
+   391→
+   392→                  <div className="mt-auto flex items-center justify-between gap-2 border-t pt-3">
+   393→                    <p className="text-xs text-muted-foreground">
+   394→                      Sinyal terakhir:{" "}
+   395→                      <span className="font-medium text-foreground">
+   396→                        {timeAgo(s.lastSignalAt)}
+   397→                      </span>
+   398→                    </p>
+   399→                    {isOwner && nextStatus && (
+   400→                      <Button
+   401→                        type="button"
+   402→                        variant="outline"
+   403→                        size="sm"
+   404→                        className="min-h-[32px] shrink-0"
+   405→                        disabled={statusMutation.isPending}
+   406→                        onClick={() =>
+   407→                          statusMutation.mutate({ id: s.id, status: nextStatus })
+   408→                        }
+   409→                      >
+   410→                        {statusMutation.isPending &&
+   411→                        statusMutation.variables?.id === s.id ? (
+   412→                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+   413→                        ) : nextStatus === "paused" ? (
+   414→                          <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+   415→                        ) : (
+   416→                          <Play className="h-3.5 w-3.5" aria-hidden="true" />
+   417→                        )}
+   418→                        {nextStatus === "paused" ? "Jeda" : "Lanjutkan"}
+   419→                      </Button>
+   420→                    )}
+   421→                    {!isOwner && (
+   422→                      <span className={cn("text-xs", meta.pulse ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+   423→                        {meta.label}
+   424→                      </span>
+   425→                    )}
+   426→                  </div>
+   427→                </Card>
+   428→              );
+   429→            })}
+   430→          </div>
+   431→        )}
+   432→      </SectionCard>
+   433→
+   434→      {/* ================= 3. Performance Attribution ================= */}
+   435→      <div className="grid gap-6 xl:grid-cols-3">
+   436→        <SectionCard
+   437→          title="Performance Attribution"
+   438→          description="PnL per strategi — kontribusi ke hasil total"
+   439→          className="xl:col-span-2"
+   440→        >
+   441→          {perfQuery.isPending ? (
+   442→            <Skeleton className="h-[280px] w-full rounded-lg" aria-label="Memuat grafik atribusi" />
+   443→          ) : perfQuery.isError ? (
+   444→            errBox(perfQuery)
+   445→          ) : perfChart.length === 0 ? (
+   446→            <EmptyState
+   447→              icon={<TrendingUp className="h-6 w-6" />}
+   448→              title="Belum ada data performa"
+   449→              description="Atribusi PnL per strategi akan tampil setelah ada trade."
+   450→            />
+   451→          ) : (
+   452→            <div className="h-[280px] w-full" role="img" aria-label="Grafik PnL per strategi">
+   453→              <ResponsiveContainer width="100%" height="100%">
+   454→                <BarChart
+   455→                  data={perfChart}
+   456→                  layout="vertical"
+   457→                  margin={{ top: 4, right: 16, left: 0, bottom: 0 }}
+   458→                >
+   459→                  <CartesianGrid
+   460→                    strokeDasharray="3 3"
+   461→                    stroke="rgba(113,113,122,0.18)"
+   462→                    horizontal={false}
+   463→                  />
+   464→                  <XAxis
+   465→                    type="number"
+   466→                    tickFormatter={(v: number) => formatCurrency(v, true)}
+   467→                    tick={{ fill: "#71717a", fontSize: 11 }}
+   468→                    tickLine={false}
+   469→                    axisLine={false}
+   470→                  />
+   471→                  <YAxis
+   472→                    type="category"
+   473→                    dataKey="name"
+   474→                    width={120}
+   475→                    tick={{ fill: "#71717a", fontSize: 11 }}
+   476→                    tickLine={false}
+   477→                    axisLine={false}
+   478→                    tickFormatter={(v: string) =>
+   479→                      typeof v === "string" && v.length > 15 ? `${v.slice(0, 14)}…` : v
+   480→                    }
+   481→                  />
+   482→                  <Tooltip
+   483→                    cursor={{ fill: "rgba(113,113,122,0.08)" }}
+   484→                    contentStyle={{
+   485→                      background: "var(--popover)",
+   486→                      border: "1px solid var(--border)",
+   487→                      borderRadius: 12,
+   488→                      fontSize: 12,
+   489→                      color: "var(--popover-foreground)",
+   490→                    }}
+   491→                    labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+   492→                    formatter={(value) => [formatCurrency(Number(value)), "PnL"]}
+   493→                  />
+   494→                  <Bar dataKey="pnlUsd" radius={[0, 4, 4, 0]} maxBarSize={22}>
+   495→                    {perfChart.map((row) => (
+   496→                      <Cell
+   497→                        key={row.name}
+   498→                        fill={row.pnlUsd >= 0 ? "#10b981" : "#f43f5e"}
+   499→                      />
+   500→                    ))}
+   501→                  </Bar>
+   502→                </BarChart>
+   503→              </ResponsiveContainer>
+   504→            </div>
+   505→          )}
+   506→        </SectionCard>
+   507→
+   508→        {/* Kontribusi */}
+   509→        <SectionCard title="Kontribusi" description="Porsi PnL per strategi">
+   510→          {perfQuery.isPending ? (
+   511→            <LoadingRows rows={4} />
+   512→          ) : perfQuery.isError ? (
+   513→            errBox(perfQuery)
+   514→          ) : perf.length === 0 ? (
+   515→            <EmptyState title="Belum ada kontribusi" />
+   516→          ) : (
+   517→            <ul className="space-y-3.5">
+   518→              {perf
+   519→                .slice()
+   520→                .sort((a, b) => Math.abs(b.contributionPct) - Math.abs(a.contributionPct))
+   521→                .map((p) => (
+   522→                  <li key={p.strategyId} className="space-y-1.5">
+   523→                    <div className="flex items-center justify-between gap-2 text-sm">
+   524→                      <span className="min-w-0 truncate font-medium">{p.name}</span>
+   525→                      <span
+   526→                        className={cn(
+   527→                          "shrink-0 font-semibold tabular-nums",
+   528→                          p.contributionPct >= 0
+   529→                            ? "text-emerald-600 dark:text-emerald-400"
+   530→                            : "text-rose-600 dark:text-rose-400",
+   531→                        )}
+   532→                      >
+   533→                        {formatPct(p.contributionPct)}
+   534→                      </span>
+   535→                    </div>
+   536→                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+   537→                      <div
+   538→                        className={cn(
+   539→                          "h-full rounded-full",
+   540→                          p.contributionPct >= 0 ? "bg-emerald-500" : "bg-rose-500",
+   541→                        )}
+   542→                        style={{
+   543→                          width: `${Math.min(100, Math.max(2, Math.abs(p.contributionPct)))}%`,
+   544→                        }}
+   545→                      />
+   546→                    </div>
+   547→                  </li>
+   548→                ))}
+   549→            </ul>
+   550→          )}
+   551→        </SectionCard>
+   552→      </div>
+   553→
+   554→      {/* ================= 4. Log Eksekusi ================= */}
+   555→      <SectionCard
+   556→        title="Log Eksekusi"
+   557→        description="Riwayat trade yang dieksekusi strategi"
+   558→        actions={
+   559→          <Select value={strategyFilter} onValueChange={setStrategyFilter}>
+   560→            <SelectTrigger size="sm" className="w-[190px]" aria-label="Filter strategi">
+   561→              <SelectValue placeholder="Semua Strategi" />
+   562→            </SelectTrigger>
+   563→            <SelectContent>
+   564→              <SelectItem value="all">Semua Strategi</SelectItem>
+   565→              {strategies.map((s) => (
+   566→                <SelectItem key={s.id} value={s.id}>
+   567→                  {s.name}
+   568→                </SelectItem>
+   569→              ))}
+   570→            </SelectContent>
+   571→          </Select>
+   572→        }
+   573→      >
+   574→        {tradesQuery.isPending && strategyFilter !== "all" ? (
+   575→          <LoadingRows rows={5} />
+   576→        ) : (strategyFilter === "all" ? tradesAllQuery.isError : tradesQuery.isError) ? (
+   577→          errBox(strategyFilter === "all" ? tradesAllQuery : tradesQuery)
+   578→        ) : tableTrades.length === 0 ? (
+   579→          <EmptyState
+   580→            icon={<Activity className="h-6 w-6" />}
+   581→            title="Belum ada trade"
+   582→            description="Trade yang dieksekusi strategi akan tercatat di sini."
+   583→          />
+   584→        ) : (
+   585→          <div className="max-h-96 overflow-y-auto rounded-lg border">
+   586→            <Table>
+   587→              <TableHeader className="sticky top-0 bg-background/95 backdrop-blur">
+   588→                <TableRow>
+   589→                  <TableHead className="w-[150px]">Waktu Close</TableHead>
+   590→                  <TableHead>Strategi</TableHead>
+   591→                  <TableHead>Symbol</TableHead>
+   592→                  <TableHead>Side</TableHead>
+   593→                  <TableHead className="text-right">Qty</TableHead>
+   594→                  <TableHead className="text-right">Entry → Exit</TableHead>
+   595→                  <TableHead className="text-right">PnL</TableHead>
+   596→                </TableRow>
+   597→              </TableHeader>
+   598→              <TableBody>
+   599→                {tableTrades.map((t) => (
+   600→                  <TableRow key={t.id}>
+   601→                    <TableCell className="tabular-nums">
+   602→                      <div className="font-medium">
+   603→                        {t.closedAt ? formatDateTime(t.closedAt) : "Terbuka"}
+   604→                      </div>
+   605→                      <div className="text-xs text-muted-foreground">
+   606→                        {t.closedAt
+   607→                          ? daysAgo(t.closedAt) < 30
+   608→                            ? timeAgo(t.closedAt)
+   609→                            : ""
+   610→                          : `dibuka ${timeAgo(t.openedAt)}`}
+   611→                      </div>
+   612→                    </TableCell>
+   613→                    <TableCell className="max-w-[160px] truncate font-medium">
+   614→                      {t.strategyName}
+   615→                    </TableCell>
+   616→                    <TableCell className="font-mono text-xs font-semibold">{t.symbol}</TableCell>
+   617→                    <TableCell>
+   618→                      <SideBadge side={t.side} />
+   619→                    </TableCell>
+   620→                    <TableCell className="text-right tabular-nums">
+   621→                      {formatNumber(t.quantity, 4)}
+   622→                    </TableCell>
+   623→                    <TableCell className="text-right tabular-nums text-xs">
+   624→                      {formatCurrency(t.entryPrice)}
+   625→                      <span className="mx-1 text-muted-foreground">→</span>
+   626→                      {t.exitPrice != null ? formatCurrency(t.exitPrice) : "—"}
+   627→                    </TableCell>
+   628→                    <TableCell
+   629→                      className={cn(
+   630→                        "text-right font-semibold tabular-nums",
+   631→                        t.pnlUsd > 0 && "text-emerald-600 dark:text-emerald-400",
+   632→                        t.pnlUsd < 0 && "text-rose-600 dark:text-rose-400",
+   633→                      )}
+   634→                    >
+   635→                      {t.pnlUsd > 0 ? "+" : ""}
+   636→                      {formatCurrency(t.pnlUsd)}
+   637→                    </TableCell>
+   638→                  </TableRow>
+   639→                ))}
+   640→              </TableBody>
+   641→            </Table>
+   642→          </div>
+   643→        )}
+   644→      </SectionCard>
+   645→
+   646→      {/* ================= 5. Alert Sinyal Terpusat ================= */}
+   647→      <SectionCard
+   648→        title="Alert Sinyal Terpusat"
+   649→        description="Notifikasi sinyal & eksekusi dari seluruh strategi"
+   650→        actions={
+   651→          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+   652→            <Bell className="h-4 w-4" aria-hidden="true" />
+   653→            diperbarui tiap 60 detik
+   654→          </span>
+   655→        }
+   656→      >
+   657→        {alertsQuery.isPending ? (
+   658→          <LoadingRows rows={4} />
+   659→        ) : alertsQuery.isError ? (
+   660→          errBox(alertsQuery)
+   661→        ) : !alertsQuery.data || alertsQuery.data.length === 0 ? (
+   662→          <EmptyState
+   663→            icon={<Bell className="h-6 w-6" />}
+   664→            title="Tidak ada alert"
+   665→            description="Sinyal dan peringatan trading akan tampil di sini."
+   666→          />
+   667→        ) : (
+   668→          <ul className="max-h-80 space-y-3 overflow-y-auto pr-1">
+   669→            {alertsQuery.data.map((a) => (
+   670→              <li key={a.id} className="flex items-start gap-3">
+   671→                <AlertLevelBadge level={a.level} className="mt-0.5 shrink-0" />
+   672→                <div className="min-w-0">
+   673→                  <p className="text-sm leading-snug">{a.message}</p>
+   674→                  <p className="mt-0.5 text-xs text-muted-foreground">
+   675→                    {a.source ? `${a.source} · ` : ""}
+   676→                    {timeAgo(a.createdAt)}
+   677→                  </p>
+   678→                </div>
+   679→              </li>
+   680→            ))}
+   681→          </ul>
+   682→        )}
+   683→      </SectionCard>
+   684→    </div>
+   685→  );
+   686→}
+   687→

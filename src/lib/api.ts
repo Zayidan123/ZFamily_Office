@@ -81,10 +81,65 @@ export async function apiFetch<T>(
   return json.data as T;
 }
 
+// ------------------------------------------------------------
+// Login result — bisa langsung sukses ATAU tantangan MFA
+// (kontrak: POST /auth/login → {token,user} | {mfaRequired,challengeToken})
+// ------------------------------------------------------------
+export interface LoginSuccess {
+  token: string;
+  user: import("@/lib/types").User;
+}
+export interface LoginMfaChallenge {
+  mfaRequired: true;
+  challengeToken: string;
+}
+export type LoginResult = LoginSuccess | LoginMfaChallenge;
+
+/** Type-guard: true bila respons login menuntut verifikasi MFA (langkah 2). */
+export function isMfaChallenge(res: LoginResult): res is LoginMfaChallenge {
+  return (res as Partial<LoginMfaChallenge>).mfaRequired === true;
+}
+
+/**
+ * GET resource mentah (blob) — TIDAK meng-unwrap envelope JSON.
+ * Dipakai untuk endpoint biner/teks seperti /transactions/export.csv.
+ * Tetap mengirim header Authorization dari store + reset auth saat 401.
+ */
+export async function apiGetBlob(
+  path: string,
+  params?: ApiFetchOptions["params"],
+): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = useAppStore.getState().token;
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let res: Response;
+  try {
+    res = await fetch(buildUrl(path, params), {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError(0, "Backend belum terjangkau — mencoba lagi");
+  }
+
+  if (res.status === 401) {
+    useAppStore.getState().clearAuth();
+    throw new ApiError(401, "Sesi berakhir — silakan login kembali");
+  }
+  if (!res.ok) {
+    // Coba ambil pesan error JSON (jika ada), fallback HTTP status
+    const j = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new ApiError(res.status, j?.error ?? `Permintaan gagal (HTTP ${res.status})`);
+  }
+  return res.blob();
+}
+
 /** Endpoint API v1 yang sering dipakai */
 export const api = {
   login: (email: string, password: string) =>
-    apiFetch<{ token: string; user: import("@/lib/types").User }>("/auth/login", {
+    apiFetch<LoginResult>("/auth/login", {
       method: "POST",
       body: { email, password },
     }),

@@ -314,10 +314,42 @@ CREATE TABLE IF NOT EXISTS tax_obligations (
   createdAt TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tax_due ON tax_obligations(dueDate);
+
+CREATE TABLE IF NOT EXISTS paper_state (
+  id             INTEGER PRIMARY KEY CHECK(id = 1),
+  cashUsd        REAL NOT NULL DEFAULT 100000,
+  realizedPnlUsd REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol         TEXT NOT NULL,
+  side           TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  qty            REAL NOT NULL,
+  priceUsd       REAL NOT NULL,
+  realizedPnlUsd REAL,
+  at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_at ON paper_trades(at);
 """
+
+# Kolom MFA (PRD #42) — ditambahkan via ALTER TABLE agar aman untuk DB existing.
+MFA_COLUMNS = (("mfaSecret", "TEXT"), ("mfaEnabled", "INTEGER NOT NULL DEFAULT 0"))
+
+
+def _migrate_users_mfa(conn: sqlite3.Connection) -> None:
+    """Tambah kolom mfaSecret/mfaEnabled ke users bila belum ada (idempotent)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for name, decl in MFA_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
 
 
 def create_tables(conn: sqlite3.Connection) -> None:
-    """Jalankan DDL lengkap (idempotent)."""
+    """Jalankan DDL lengkap (idempotent) + migrasi ringan + seed paper_state."""
     conn.executescript(DDL)
+    _migrate_users_mfa(conn)
+    # Paper trading sandbox: state awal $100.000 cash, PnL riil 0 (sekali saja).
+    if not query_one(conn, "SELECT id FROM paper_state WHERE id = 1"):
+        execute(conn, "INSERT INTO paper_state(id, cashUsd, realizedPnlUsd) VALUES(1, 100000, 0)")
     conn.commit()

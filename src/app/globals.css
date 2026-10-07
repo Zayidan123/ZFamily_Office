@@ -167,6 +167,66 @@
       animation: none;
     }
   }
+
+  /* ==========================================================
+     S-b — Pola dot-grid halus (panel brand login, latar gelap)
+     radial-gradient 1px titik, repeat 26px
+     ========================================================== */
+  .dot-grid {
+    background-image: radial-gradient(
+      circle at 1px 1px,
+      oklch(1 0 0 / 7%) 1px,
+      transparent 0
+    );
+    background-size: 26px 26px;
+  }
+
+  /* ==========================================================
+     S-b — Skeleton shimmer overlay (gradient bergerak halus)
+     Terapkan dengan className "zfo-shimmer" pada Skeleton/view
+     yang disentuh Task S-b (skeleton polos tetap berfungsi).
+     ========================================================== */
+  @keyframes zfo-shimmer {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+  .zfo-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .zfo-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      oklch(1 0 0 / 40%),
+      transparent
+    );
+    animation: zfo-shimmer 1.8s ease-in-out infinite;
+  }
+  .dark .zfo-shimmer::after {
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      oklch(1 0 0 / 10%),
+      transparent
+    );
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .zfo-shimmer::after {
+      animation: none;
+      content: none;
+    }
+  }
 }
 
 /* touch 1791398355 */
+
+/* touch S-b */

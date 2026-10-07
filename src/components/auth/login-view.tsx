@@ -2,18 +2,22 @@
 
 // ============================================================
 // Login — split screen: panel brand (kiri) + form & akses demo (kanan)
+// Task S-b: langkah 2 verifikasi MFA (challengeToken → /auth/mfa/verify)
+// + polish: dot-grid & glow emerald (kiri), shadow-xl rounded-2xl (kanan)
 // ============================================================
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
-import { api, ApiError } from "@/lib/api";
+import { api, apiFetch, ApiError, isMfaChallenge } from "@/lib/api";
+import type { User } from "@/lib/types";
 import { Monogram } from "@/components/shared/kit";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import {
   ShieldCheck,
   TrendingUp,
@@ -24,6 +28,8 @@ import {
   Users,
   Briefcase,
   KeyRound,
+  ArrowLeft,
+  Smartphone,
 } from "lucide-react";
 
 const DEMO_ACCOUNTS = [
@@ -83,6 +89,15 @@ const VALUE_POINTS = [
   },
 ] as const;
 
+/** Pola focus-visible konsisten (polish S-b) */
+const focusRing =
+  "focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2";
+
+interface MfaChallenge {
+  challengeToken: string;
+  email: string;
+}
+
 export default function LoginView() {
   const setAuth = useAppStore((s) => s.setAuth);
   const setActiveView = useAppStore((s) => s.setActiveView);
@@ -91,19 +106,43 @@ export default function LoginView() {
   const [password, setPassword] = React.useState("");
   const [pendingDemo, setPendingDemo] = React.useState<string | null>(null);
 
+  // ---------- Langkah 2: MFA ----------
+  const [mfaChallenge, setMfaChallenge] = React.useState<MfaChallenge | null>(null);
+  const [mfaCode, setMfaCode] = React.useState("");
+  const mfaInputRef = React.useRef<HTMLDivElement>(null);
+
+  const finishLogin = React.useCallback(
+    (token: string, user: User) => {
+      setAuth(token, user);
+      setActiveView("dashboard");
+      toast.success(`Selamat datang, ${user.name}`, {
+        description: `Masuk sebagai ${user.role}.`,
+      });
+      setPendingDemo(null);
+      setPassword("");
+      setMfaChallenge(null);
+      setMfaCode("");
+    },
+    [setAuth, setActiveView],
+  );
+
   const mutation = useMutation({
     mutationFn: async (creds: { email: string; password: string; role?: string }) => {
       setPendingDemo(creds.role ?? "form");
       return api.login(creds.email, creds.password);
     },
     onSuccess: (res, vars) => {
-      setAuth(res.token, res.user);
-      setActiveView("dashboard");
-      toast.success(`Selamat datang, ${res.user.name}`, {
-        description: `Masuk sebagai ${res.user.role}.`,
-      });
-      setPendingDemo(null);
-      setPassword("");
+      // Langkah 2 diperlukan — simpan challengeToken, jangan set auth
+      if (isMfaChallenge(res)) {
+        setMfaChallenge({ challengeToken: res.challengeToken, email: vars.email });
+        setPendingDemo(null);
+        setPassword("");
+        toast.info("Verifikasi dua faktor diperlukan", {
+          description: `Masukkan kode 6 digit dari aplikasi authenticator untuk ${vars.email}.`,
+        });
+        return;
+      }
+      finishLogin(res.token, res.user);
       void vars;
     },
     onError: (err) => {
@@ -116,8 +155,38 @@ export default function LoginView() {
     },
   });
 
+  const verifyM = useMutation({
+    mutationFn: async (code: string) => {
+      if (!mfaChallenge) throw new ApiError(0, "Sesi verifikasi tidak ditemukan");
+      return apiFetch<{ token: string; user: User }>("/auth/mfa/verify", {
+        method: "POST",
+        body: { challengeToken: mfaChallenge.challengeToken, code },
+      });
+    },
+    onSuccess: (res) => {
+      finishLogin(res.token, res.user);
+    },
+    onError: (err) => {
+      toast.error("Verifikasi gagal", {
+        description:
+          err instanceof ApiError
+            ? err.message
+            : "Kode tidak valid — coba periksa kembali aplikasi authenticator Anda.",
+      });
+    },
+  });
+
   const submitForm = (e: React.FormEvent) => {
     e.preventDefault();
+    if (mfaChallenge) {
+      // Mode MFA: form ini menangani kode verifikasi
+      if (mfaCode.length !== 6) {
+        toast.error("Masukkan kode 6 digit");
+        return;
+      }
+      verifyM.mutate(mfaCode);
+      return;
+    }
     if (!email.trim() || !password) {
       toast.error("Lengkapi email dan password");
       return;
@@ -125,31 +194,31 @@ export default function LoginView() {
     mutation.mutate({ email: email.trim(), password });
   };
 
-  const busy = mutation.isPending;
+  const backToCredentials = () => {
+    setMfaChallenge(null);
+    setMfaCode("");
+  };
+
+  const busy = mutation.isPending || verifyM.isPending;
 
   return (
     <div className="min-h-screen w-full lg:grid lg:grid-cols-[1.1fr_1fr]">
       {/* ================= Panel kiri — brand ================= */}
       <aside
-        className="relative hidden overflow-hidden bg-zinc-950 lg:flex lg:flex-col lg:justify-between p-10 xl:p-14"
+        className="dot-grid relative hidden overflow-hidden bg-zinc-950 lg:flex lg:flex-col lg:justify-between p-10 xl:p-14"
         aria-label="Tentang Z Family Office"
       >
-        {/* glow dekoratif */}
+        {/* glow dekoratif — emerald lembut + amber hangat */}
         <div
           className="pointer-events-none absolute -top-32 -left-32 h-96 w-96 rounded-full bg-emerald-600/20 blur-3xl"
           aria-hidden="true"
         />
         <div
-          className="pointer-events-none absolute -bottom-40 right-0 h-96 w-96 rounded-full bg-amber-500/15 blur-3xl"
+          className="pointer-events-none absolute top-1/3 left-1/4 h-72 w-72 rounded-full bg-emerald-500/10 blur-3xl"
           aria-hidden="true"
         />
         <div
-          className="pointer-events-none absolute inset-0 opacity-[0.35]"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 0)",
-            backgroundSize: "28px 28px",
-          }}
+          className="pointer-events-none absolute -bottom-40 right-0 h-96 w-96 rounded-full bg-amber-500/15 blur-3xl"
           aria-hidden="true"
         />
 
@@ -201,95 +270,179 @@ export default function LoginView() {
           </div>
         </div>
 
-        <Card className="w-full max-w-md rounded-xl border-border/70 p-6 shadow-sm sm:p-8">
-          <div className="space-y-1.5">
-            <h2 className="text-xl font-bold tracking-tight">Masuk ke platform</h2>
-            <p className="text-sm text-muted-foreground">
-              Gunakan akun keluarga Anda untuk mengakses dasbor kekayaan.
-            </p>
-          </div>
+        <Card className="w-full max-w-md rounded-2xl border-border/70 p-6 shadow-xl sm:p-8">
+          {mfaChallenge ? (
+            /* ============ Langkah 2: Verifikasi Dua Faktor ============ */
+            <div ref={mfaInputRef}>
+              <div className="space-y-1.5">
+                <span
+                  className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  aria-hidden="true"
+                >
+                  <Smartphone className="h-5 w-5" />
+                </span>
+                <h2 className="text-xl font-bold tracking-tight">Verifikasi Dua Faktor</h2>
+                <p className="text-sm text-muted-foreground">
+                  Masukkan kode 6 digit dari aplikasi authenticator untuk{" "}
+                  <span className="font-medium text-foreground">{mfaChallenge.email}</span>.
+                </p>
+              </div>
 
-          <form onSubmit={submitForm} className="mt-6 space-y-4" noValidate>
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                placeholder="nama@zfamily.id"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="h-11"
-                disabled={busy}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="h-11"
-                disabled={busy}
-              />
-            </div>
-            <Button
-              type="submit"
-              className="h-11 w-full bg-emerald-600 text-white hover:bg-emerald-700"
-              disabled={busy}
-            >
-              {busy && pendingDemo === "form" ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <LogIn className="h-4 w-4" aria-hidden="true" />
-              )}
-              {busy && pendingDemo === "form" ? "Memproses…" : "Masuk"}
-            </Button>
-          </form>
-
-          <div className="my-6 flex items-center gap-3">
-            <Separator className="flex-1" />
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">atau</span>
-            <Separator className="flex-1" />
-          </div>
-
-          {/* Akses Demo Cepat */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-              <p className="text-sm font-semibold">Akses Demo Cepat</p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Masuk instan dengan salah satu peran demo (kredensial uji).
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {DEMO_ACCOUNTS.map((acc) => {
-                const loading = busy && pendingDemo === acc.role;
-                return (
-                  <Button
-                    key={acc.role}
-                    type="button"
-                    variant="outline"
-                    className={`h-11 flex-col items-center justify-center gap-0.5 ${acc.className}`}
-                    disabled={busy}
-                    onClick={() => mutation.mutate({ email: acc.email, password: acc.password, role: acc.role })}
-                    aria-label={`Masuk sebagai ${acc.role} (${acc.name})`}
-                  >
-                    {loading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <acc.icon className="h-4 w-4" aria-hidden="true" />
+              <form onSubmit={submitForm} className="mt-6 space-y-4" noValidate>
+                <div className="space-y-2">
+                  <Label htmlFor="mfa-code">Kode Authenticator</Label>
+                  <Input
+                    id="mfa-code"
+                    autoFocus
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    placeholder="000000"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    className={cn(
+                      focusRing,
+                      "h-12 text-center font-mono text-xl tracking-[0.55em]",
                     )}
-                    <span className="text-xs font-semibold leading-none">{acc.role}</span>
-                    <span className="text-[10px] leading-none opacity-70">{acc.name}</span>
-                  </Button>
-                );
-              })}
+                    disabled={verifyM.isPending}
+                    aria-label="Kode verifikasi 6 digit"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Kode berganti tiap 30 detik (TOTP — Google Authenticator, Authy, dsb.).
+                  </p>
+                </div>
+
+                <Button
+                  type="submit"
+                  className={cn(
+                    focusRing,
+                    "h-11 w-full bg-emerald-600 text-white hover:bg-emerald-700",
+                  )}
+                  disabled={verifyM.isPending || mfaCode.length !== 6}
+                >
+                  {verifyM.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {verifyM.isPending ? "Memverifikasi…" : "Verifikasi"}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={cn(focusRing, "h-10 w-full")}
+                  onClick={backToCredentials}
+                  disabled={verifyM.isPending}
+                >
+                  <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                  Kembali
+                </Button>
+              </form>
             </div>
-          </div>
+          ) : (
+            /* ============ Langkah 1: Kredensial ============ */
+            <>
+              <div className="space-y-1.5">
+                <h2 className="text-xl font-bold tracking-tight">Masuk ke platform</h2>
+                <p className="text-sm text-muted-foreground">
+                  Gunakan akun keluarga Anda untuk mengakses dasbor kekayaan.
+                </p>
+              </div>
+
+              <form onSubmit={submitForm} className="mt-6 space-y-4" noValidate>
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="nama@zfamily.id"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className={cn("h-11", focusRing)}
+                    disabled={busy}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className={cn("h-11", focusRing)}
+                    disabled={busy}
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  className={cn(
+                    focusRing,
+                    "h-11 w-full bg-emerald-600 text-white hover:bg-emerald-700",
+                  )}
+                  disabled={busy}
+                >
+                  {busy && pendingDemo === "form" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <LogIn className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {busy && pendingDemo === "form" ? "Memproses…" : "Masuk"}
+                </Button>
+              </form>
+
+              <div className="my-6 flex items-center gap-3">
+                <Separator className="flex-1" />
+                <span className="text-xs uppercase tracking-wide text-muted-foreground">atau</span>
+                <Separator className="flex-1" />
+              </div>
+
+              {/* Akses Demo Cepat */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  <p className="text-sm font-semibold">Akses Demo Cepat</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Masuk instan dengan salah satu peran demo (kredensial uji).
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {DEMO_ACCOUNTS.map((acc) => {
+                    const loading = busy && pendingDemo === acc.role;
+                    return (
+                      <Button
+                        key={acc.role}
+                        type="button"
+                        variant="outline"
+                        className={cn(
+                          focusRing,
+                          "h-11 flex-col items-center justify-center gap-0.5",
+                          acc.className,
+                        )}
+                        disabled={busy}
+                        onClick={() =>
+                          mutation.mutate({ email: acc.email, password: acc.password, role: acc.role })
+                        }
+                        aria-label={`Masuk sebagai ${acc.role} (${acc.name})`}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <acc.icon className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span className="text-xs font-semibold leading-none">{acc.role}</span>
+                        <span className="text-[10px] leading-none opacity-70">{acc.name}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
         </Card>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
