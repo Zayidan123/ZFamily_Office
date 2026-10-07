@@ -20,6 +20,7 @@ import LoginView from "@/components/auth/login-view";
 import CommandPalette from "@/components/command-palette";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -102,13 +103,12 @@ function NavButton({
   collapsed?: boolean;
 }) {
   const Icon = item.icon;
-  return (
+  const button = (
     <button
       type="button"
       onClick={onSelect}
       aria-current={active ? "page" : undefined}
       aria-label={collapsed ? item.label : undefined}
-      title={collapsed ? item.label : undefined}
       className={cn(
         "flex min-h-[44px] w-full items-center gap-3 border-l-2 text-sm font-medium transition-colors rounded-r-lg",
         collapsed ? "justify-center border-l-2 px-0 py-2" : "px-4 py-2",
@@ -121,6 +121,28 @@ function NavButton({
       {!collapsed && item.label}
     </button>
   );
+
+  // Rail kompak: tooltip hover dgn label + hint shortcut G+<key> (ronde 9)
+  if (collapsed) {
+    const gKey =
+      item.key === "dashboard" ? "D" : item.key === "assets" ? "A" :
+      item.key === "transactions" ? "T" : item.key === "portfolio" ? "P" :
+      item.key === "trading" ? "R" : item.key === "market" ? "M" :
+      item.key === "governance" ? "G" : item.key === "tax" ? "X" :
+      item.key === "research" ? "I" : item.key === "succession" ? "S" : ",";
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent side="right" sideOffset={10} className="border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-100">
+          <span className="font-medium">{item.label}</span>
+          <kbd className="ml-2 rounded border border-zinc-700 bg-zinc-800 px-1 font-mono text-[10px] font-semibold text-zinc-300">
+            G {gKey}
+          </kbd>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  return button;
 }
 
 function SidebarContent({
@@ -325,6 +347,7 @@ export default function AppShell() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
+      <TooltipProvider delayDuration={200}>
       <div className="flex flex-1">
         {/* ============ Sidebar desktop ============ */}
         <aside
@@ -475,6 +498,7 @@ export default function AppShell() {
 
       {/* Command palette global (⌘K) */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      </TooltipProvider>
     </div>
   );
 }

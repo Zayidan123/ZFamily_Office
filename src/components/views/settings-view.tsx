@@ -20,6 +20,8 @@ import {
 } from "@/components/shared/kit";
 import type {
   AllocationTarget,
+  NotifyChannelKey,
+  NotifyChannelsData,
   Settings,
   SystemBackupCreated,
   SystemBackupList,
@@ -56,23 +58,26 @@ import {
 } from "@/components/ui/accordion";
 import {
   AlertTriangle,
+  BellRing,
   Check,
   Copy,
   DatabaseBackup,
   Download,
   Info,
   Loader2,
+  Mail,
   Monitor,
   Moon,
   Palette,
   PieChart,
   Plus,
+  Send,
   ShieldCheck,
   Siren,
   Smartphone,
   Sun,
 } from "lucide-react";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, timeAgo } from "@/lib/format";
 
 type SettingsData = Settings & { panicMode?: boolean };
 
@@ -155,6 +160,7 @@ const ROADMAP: { code: string; name: string; features: { label: string; live: bo
       { label: "Riwayat trade & PnL", live: true },
       { label: "Kinerja & win rate per strategi", live: true },
       { label: "Alert trading terpusat", live: true },
+      { label: "Kanal notifikasi Email & Telegram", live: true },
       { label: "Eksekusi order otomatis via exchange API", live: false },
       { label: "Paper trading sandbox", live: false },
       { label: "Copy-trading antar strategi", live: false },
@@ -400,6 +406,72 @@ export default function SettingsView() {
       toast.error("Gagal mengunduh backup", {
         description: e instanceof ApiError ? e.message : "Backend belum terjangkau",
       }),
+  });
+
+  // ---------- Kanal Notifikasi (ronde 9) ----------
+  const canReadNotify = user?.role === "owner" || user?.role === "beneficiary" || user?.role === "advisor";
+
+  const notifyQ = useQuery<NotifyChannelsData, ApiError>({
+    queryKey: ["notify-channels"],
+    queryFn: () => apiFetch<NotifyChannelsData>("/settings/notification-channels"),
+    enabled: canReadNotify,
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  // form lokal (draft) — disinkronkan dgn data query saat pertama load
+  const [notifyDraft, setNotifyDraft] = React.useState<
+    Record<NotifyChannelKey, { enabled: boolean; target: string }>
+  >({
+    email: { enabled: false, target: "" },
+    telegram: { enabled: false, target: "" },
+  });
+  const [notifyDirty, setNotifyDirty] = React.useState(false);
+
+  const notifyLoadedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (notifyQ.data && !notifyLoadedRef.current) {
+      notifyLoadedRef.current = true;
+      setNotifyDraft(notifyQ.data.channels);
+    }
+  }, [notifyQ.data]);
+
+  const notifyPutM = useMutation({
+    mutationFn: () =>
+      apiFetch<NotifyChannelsData>("/settings/notification-channels", {
+        method: "PUT",
+        body: { channels: notifyDraft },
+      }),
+    onSuccess: (d: NotifyChannelsData) => {
+      notifyLoadedRef.current = true;
+      setNotifyDraft(d.channels);
+      setNotifyDirty(false);
+      void qc.invalidateQueries({ queryKey: ["notify-channels"] });
+      toast.success("Kanal notifikasi disimpan", {
+        description: Object.entries(d.channels)
+          .map(([k, v]) => `${k} ${v.enabled ? "aktif" : "nonaktif"}`)
+          .join(" · "),
+      });
+    },
+    onError: (e) => toast.error("Gagal menyimpan kanal notifikasi", { description: errMsg(e) }),
+  });
+
+  const notifyTestM = useMutation({
+    mutationFn: (channel: NotifyChannelKey) =>
+      apiFetch<{ channel: NotifyChannelKey; target: string }>(
+        "/settings/notification-channels/test",
+        {
+          method: "POST",
+          body: { channel },
+        },
+      ),
+    onSuccess: (d: { channel: NotifyChannelKey; target: string }, channel) => {
+      void qc.invalidateQueries({ queryKey: ["notify-channels"] });
+      toast.success(`Tes ${channel} terkirim (mock)`, {
+        description: `Disimulasikan terkirim ke ${d.target} — tercatat di riwayat & audit log.`,
+      });
+    },
+    onError: (e) => toast.error("Gagal mengirim tes", { description: errMsg(e) }),
   });
 
   // ---------- MFA — Autentikasi Dua Faktor (Task S-b) ----------
@@ -966,6 +1038,241 @@ export default function SettingsView() {
           </div>
         )}
       </SectionCard>
+
+      {/* ================= Kanal Notifikasi (ronde 9) ================= */}
+      {canReadNotify && (
+        <SectionCard
+          title="Kanal Notifikasi"
+          description="Kirim notifikasi penting (price alert, sistem) ke Email / Telegram — mock delivery"
+        >
+          {notifyQ.isError ? (
+            <ErrorBox
+              message="Gagal memuat konfigurasi kanal notifikasi."
+              onRetry={() => void notifyQ.refetch()}
+            />
+          ) : notifyQ.isPending || !notifyQ.data ? (
+            <div className="space-y-3">
+              {[0, 1].map((i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)}
+            </div>
+          ) : (
+            <>
+              {(["email", "telegram"] as NotifyChannelKey[]).map((ch) => {
+                const conf = notifyDraft[ch];
+                const isEmail = ch === "email";
+                const Icon = isEmail ? Mail : Send;
+                const testPending = notifyTestM.isPending && notifyTestM.variables === ch;
+                return (
+                  <div
+                    key={ch}
+                    className={cn(
+                      "flex flex-col gap-3 rounded-xl border p-4 transition-colors",
+                      conf.enabled && "border-emerald-500/40 bg-emerald-500/[0.04]",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span
+                          className={cn(
+                            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+                            isEmail
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+                          )}
+                          aria-hidden="true"
+                        >
+                          <Icon className="h-5 w-5" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="flex items-center gap-2 text-sm font-medium capitalize">
+                            {ch === "telegram" ? "Telegram" : "Email"}
+                            <span
+                              className={cn(
+                                "inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-semibold",
+                                conf.enabled
+                                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                                  : "bg-muted text-muted-foreground",
+                              )}
+                            >
+                              {conf.enabled ? "aktif" : "nonaktif"}
+                            </span>
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {isEmail
+                              ? "Ringkasan alert & kejadian penting ke email keluarga."
+                              : "Pesan singkat real-time ke chat/bot Telegram keluarga."}
+                          </p>
+                        </div>
+                      </div>
+                      <Switch
+                        checked={conf.enabled}
+                        disabled={!isOwner || notifyPutM.isPending}
+                        onCheckedChange={(v) => {
+                          setNotifyDraft((f) => ({
+                            ...f,
+                            [ch]: { ...f[ch], enabled: v },
+                          }));
+                          setNotifyDirty(true);
+                        }}
+                        aria-label={`Aktifkan kanal ${ch === "telegram" ? "Telegram" : "Email"}`}
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <div className="relative min-w-0 flex-1">
+                        <Icon
+                          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <Input
+                          value={conf.target}
+                          onChange={(e) => {
+                            setNotifyDraft((f) => ({
+                              ...f,
+                              [ch]: { ...f[ch], target: e.target.value },
+                            }));
+                            setNotifyDirty(true);
+                          }}
+                          disabled={!isOwner || notifyPutM.isPending}
+                          placeholder={isEmail ? "nama@zfamily.id" : "@handle atau chat_id"}
+                          className={cn("h-10 pl-9", focusRing)}
+                          aria-label={`Target ${ch === "telegram" ? "Telegram" : "Email"}`}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="min-h-[40px] shrink-0 gap-1.5"
+                        disabled={
+                          !isOwner || !conf.enabled || !conf.target.trim() || testPending
+                        }
+                        onClick={() => notifyTestM.mutate(ch)}
+                        aria-label={`Kirim pesan tes via ${ch === "telegram" ? "Telegram" : "Email"}`}
+                      >
+                        {testPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Send className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        Kirim tes
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* bar simpan (owner) / catatan read-only (lain) */}
+              {isOwner ? (
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <p className="text-xs text-muted-foreground">
+                    {notifyDirty
+                      ? "Ada perubahan yang belum disimpan."
+                      : "Perubahan aktif/aktif-nonaktif & target tersimpan ke server."}
+                  </p>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="min-h-[40px]"
+                      disabled={!notifyDirty || notifyPutM.isPending}
+                      onClick={() => {
+                        setNotifyDraft(notifyQ.data!.channels);
+                        setNotifyDirty(false);
+                      }}
+                    >
+                      Batalkan
+                    </Button>
+                    <Button
+                      type="button"
+                      className="min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+                      disabled={!notifyDirty || notifyPutM.isPending}
+                      onClick={() => notifyPutM.mutate()}
+                    >
+                      {notifyPutM.isPending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                      )}
+                      Simpan Konfigurasi
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="pt-1 text-xs italic text-muted-foreground/70">
+                  Hanya owner yang dapat mengubah konfigurasi kanal — Anda melihat mode baca-saja.
+                </p>
+              )}
+
+              <p className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  Delivery saat ini <strong>disimulasikan</strong> (mock) di server — tanpa email/bot
+                  sungguhan. Setiap pengiriman (tes maupun price alert terpicu) tercatat di riwayat
+                  di bawah &amp; audit log.
+                </span>
+              </p>
+
+              {/* ---------- Riwayat pengiriman ---------- */}
+              <div className="mt-1">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                    Riwayat Pengiriman
+                  </h3>
+                  <Badge
+                    variant="outline"
+                    className="px-2 py-0 text-[10px] tabular-nums text-muted-foreground"
+                  >
+                    {notifyQ.data.deliveredCount} total
+                  </Badge>
+                </div>
+                {(notifyQ.data.log.length ?? 0) === 0 ? (
+                  <p className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">
+                    Belum ada pengiriman — aktifkan kanal, kirim tes, atau tunggu price alert terpicu.
+                  </p>
+                ) : (
+                  <ul className="scrollbar-thin max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                    {notifyQ.data.log.map((e) => (
+                      <li
+                        key={e.id}
+                        className="flex items-start gap-2.5 rounded-lg border bg-muted/30 px-3 py-2"
+                      >
+                        <span
+                          className={cn(
+                            "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+                            e.channel === "email"
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+                          )}
+                          aria-hidden="true"
+                        >
+                          {e.channel === "email" ? (
+                            <Mail className="h-3.5 w-3.5" />
+                          ) : (
+                            <Send className="h-3.5 w-3.5" />
+                          )}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="line-clamp-2 text-xs font-medium">{e.message}</p>
+                          <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+                            {e.target} · {e.source} · {timeAgo(e.sentAt)}
+                          </p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-400"
+                        >
+                          Terkirim
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </SectionCard>
+      )}
 
       {/* ================= Roadmap Platform (PRD) ================= */}
       <SectionCard

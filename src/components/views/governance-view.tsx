@@ -386,7 +386,9 @@ function UsersTab() {
             <LoadingRows rows={4} />
           )
         ) : (
-          <div className="overflow-hidden rounded-xl border">
+          <>
+          {/* Desktop: tabel penuh */}
+          <div className="hidden overflow-hidden rounded-xl border md:block">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -424,6 +426,38 @@ function UsersTab() {
               </tbody>
             </table>
           </div>
+
+          {/* Mobile: kartu (ronde 9 — hapus scroll horizontal tabel 4 kolom) */}
+          <ul className="scrollbar-thin max-h-[26rem] space-y-2 overflow-y-auto pr-1 md:hidden">
+            {usersQ.data.map((u) => (
+              <li key={u.id} className="rounded-xl border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600/15 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                      {u.name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("")}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+                        {u.name}
+                        {user?.id === u.id && (
+                          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                            Anda
+                          </Badge>
+                        )}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">{u.email}</p>
+                    </div>
+                  </div>
+                  <RoleBadge role={u.role} />
+                </div>
+                <p className="mt-2 flex items-center gap-1.5 border-t pt-2 text-xs text-emerald-600 dark:text-emerald-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                  Aktif
+                </p>
+              </li>
+            ))}
+          </ul>
+          </>
         )}
       </div>
 

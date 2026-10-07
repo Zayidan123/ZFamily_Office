@@ -336,6 +336,34 @@ export interface SystemBackupCreated {
   backups: SystemBackup[];
 }
 
+// ---------- Kanal Notifikasi (ronde 9 — /settings/notification-channels) ----------
+export type NotifyChannelKey = "email" | "telegram";
+
+export interface NotifyChannelState {
+  enabled: boolean;
+  target: string;
+}
+
+/** Entri riwayat pengiriman (mock delivery — "delivered" = tersimulasi terkirim) */
+export interface NotifyLogEntry {
+  id: string;
+  channel: NotifyChannelKey;
+  target: string;
+  message: string;
+  status: "delivered" | "failed";
+  source: string;
+  sentAt: string;
+}
+
+export interface NotifyChannelsData {
+  channels: Record<NotifyChannelKey, NotifyChannelState>;
+  /** riwayat terbaru (maks 20 entri dari API) */
+  log: NotifyLogEntry[];
+  /** total entri riwayat tersimpan di backend (maks 50) */
+  deliveredCount: number;
+  mock: boolean;
+}
+
 // ---------- Laporan Kinerja Bulanan (v1.4.0 — Task U-a/U-b) ----------
 export interface MonthlyReportRow {
   month: string; // "2026-01"

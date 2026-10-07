@@ -14,10 +14,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from db import create_tables, get_conn
 from errors import ApiError
 from routers import (alerts_price, analytics, assets_tx, auth_system, dashboard, export,
-                     governance, knowledge, market, paper, risk, tax, trading)
+                     governance, knowledge, market, notify_channels, paper, risk, tax, trading)
 from seed import seed_if_empty, seed_market_tax_if_empty, seed_price_alerts_if_empty
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 
 @asynccontextmanager
@@ -63,7 +63,7 @@ def health():
 
 for _r in (auth_system.router, dashboard.router, assets_tx.router, governance.router,
            risk.router, trading.router, paper.router, knowledge.router, market.router, tax.router,
-           export.router, alerts_price.router, analytics.router):
+           export.router, alerts_price.router, analytics.router, notify_channels.router):
     app.include_router(_r, prefix="/api/v1")
 
 

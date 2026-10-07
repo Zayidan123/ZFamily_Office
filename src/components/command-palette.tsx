@@ -13,6 +13,7 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
 import { NAV_ITEMS, type ViewKey } from "@/lib/nav";
+import ShortcutHelpDialog from "@/components/shell/shortcut-help";
 import {
   CommandDialog,
   CommandEmpty,
@@ -23,7 +24,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { Moon, Sun, LogOut, Zap, Plus, FileText, DatabaseBackup } from "lucide-react";
+import { Moon, Sun, LogOut, Zap, Plus, FileText, DatabaseBackup, Keyboard } from "lucide-react";
 
 export default function CommandPalette({
   open,
@@ -38,6 +39,9 @@ export default function CommandPalette({
   const isOwner = user?.role === "owner";
   const { theme, setTheme } = useTheme();
   const isDark = theme === "dark";
+
+  // Bantuan pintasan (ronde 9) — dibuka dari item palette / footer
+  const [helpOpen, setHelpOpen] = React.useState(false);
 
   // Hint shortcut G+<key> per view (konsisten dgn GO_SHORTCUTS di app-shell)
   const VIEW_G_KEY: Partial<Record<ViewKey, string>> = {
@@ -83,6 +87,7 @@ export default function CommandPalette({
     });
 
   return (
+    <>
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
@@ -179,6 +184,18 @@ export default function CommandPalette({
           )}
 
           <CommandItem
+            value="Bantuan pintasan keyboard"
+            keywords={["bantuan", "pintasan", "shortcut", "keyboard", "hotkey", "help"]}
+            onSelect={() =>
+              run(() => setHelpOpen(true))
+            }
+          >
+            <Keyboard className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            <span>Bantuan pintasan keyboard</span>
+            <CommandShortcut className="font-mono text-[10px] tracking-wide">?</CommandShortcut>
+          </CommandItem>
+
+          <CommandItem
             value="Keluar"
             keywords={["logout", "keluar", "sesi", "keluar akun"]}
             className="text-rose-600 data-[selected=true]:bg-rose-500/10 data-[selected=true]:text-rose-700 dark:text-rose-400 dark:data-[selected=true]:text-rose-300"
@@ -197,22 +214,33 @@ export default function CommandPalette({
         </CommandGroup>
       </CommandList>
 
-      {/* Footer hint shortcut (ronde 8) — dekoratif, disembunyikan dari SR */}
+      {/* Footer hint shortcut (ronde 8/9) — tombol buka bantuan pintasan */}
       <div
         className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-4 py-2 text-[11px] text-muted-foreground"
-        aria-hidden="true"
       >
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1" aria-hidden="true">
           <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">G</kbd>
           lalu
           <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">D/A/T/M…</kbd>
           lompat view
         </span>
-        <span className="flex items-center gap-1">
-          <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">?</kbd>
-          buka palette
-        </span>
+        <button
+          type="button"
+          className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 underline-offset-2 transition-colors hover:bg-accent hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
+          onClick={() => {
+            onOpenChange(false);
+            window.setTimeout(() => setHelpOpen(true), 80);
+          }}
+        >
+          <Keyboard className="h-3 w-3" aria-hidden="true" />
+          Lihat semua pintasan
+        </button>
       </div>
     </CommandDialog>
+
+    {/* Modal bantuan pintasan (ronde 9) — DI LUAR CommandDialog agar tidak ikut
+        ter-unmount saat palette ditutup (radix Dialog unmount children) */}
+    <ShortcutHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+    </>
   );
 }

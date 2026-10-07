@@ -23,6 +23,7 @@ from db import execute, get_conn, guard_mutation, now_iso, query, query_one, r2,
 from errors import ApiError, ok
 from prices import get_rates
 from security import require_auth
+from .notify_channels import deliver_notification
 
 router = APIRouter(tags=["market"])
 
@@ -104,6 +105,8 @@ def _notify_trigger(conn, alert_id: int, symbol: str, direction: str,
         "INSERT INTO alerts(kind, source, level, message, created_at) VALUES('trading', ?, ?, ?, ?)",
         (NOTIFY_SOURCE, NOTIFY_LEVEL, message, now_iso()),
     )
+    # ronde 9: fan-out ke kanal eksternal aktif (email/telegram — mock delivery)
+    deliver_notification(conn, NOTIFY_SOURCE, message)
 
 
 # --------------------------------------------------------------------- list
