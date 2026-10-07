@@ -296,6 +296,23 @@ export function Monogram({ size = 40, className }: { size?: number; className?: 
 // StatCard
 // ------------------------------------------------------------
 
+/**
+ * Ekstrak teks polos dari ReactNode (rekursif) — dipakai StatCard untuk
+ * atribut title agar nilai panjang yang ter-truncate tetap terbaca penuh
+ * saat hover. Node non-teks (icon dsb.) diabaikan.
+ */
+function nodeToText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map((n) => nodeToText(n)).join("");
+  if (React.isValidElement(node)) {
+    const props = node.props as { children?: React.ReactNode };
+    return nodeToText(props.children);
+  }
+  return "";
+}
+
 interface StatCardProps {
   label: string;
   value: React.ReactNode;
@@ -310,8 +327,10 @@ interface StatCardProps {
 export function StatCard({ label, value, sub, delta, icon, loading, accent = "default", className }: StatCardProps) {
   const up = (delta ?? 0) >= 0;
   const animatedValue = useAnimatedValue(loading ? null : value);
+  // Teks penuh utk atribut title (hover) — jaga bila nilai ter-truncate di kolom sempit.
+  const valueText = nodeToText(animatedValue).trim();
   return (
-    <Card className={cn(cardHover, "rounded-xl p-5 flex flex-col gap-3 min-h-[118px]", className)}>
+    <Card className={cn(cardHover, "min-w-0 rounded-xl p-5 flex flex-col gap-3 min-h-[118px]", className)}>
       <div className="flex items-start justify-between gap-3">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {label}
@@ -337,7 +356,13 @@ export function StatCard({ label, value, sub, delta, icon, loading, accent = "de
         </div>
       ) : (
         <>
-          <div className="text-2xl font-semibold tabular-nums leading-none">{animatedValue}</div>
+          {/* min-w-0 + truncate: nilai panjang (mis. "Rp 40.003.721.671") tidak
+              meluber di grid 2-kolom mobile — full text tampil via title hover. */}
+          <div className="min-w-0 text-2xl font-semibold tabular-nums leading-none">
+            <span className="block truncate" title={valueText || undefined}>
+              {animatedValue}
+            </span>
+          </div>
           <div className="flex items-center gap-2 text-xs">
             {typeof delta === "number" && Number.isFinite(delta) && (
               <span

@@ -1,0 +1,652 @@
+     1→"use client";
+     2→
+     3→// ============================================================
+     4→// Dashboard — flagship view
+     5→// StatCards · Tren Net Worth (Area) · Alokasi (Donut) · Top 5
+     6→// Transaksi Terakhir · Alert Pusat · Kesehatan Platform
+     7→// ============================================================
+     8→import * as React from "react";
+     9→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    10→import { toast } from "sonner";
+    11→import { useAppStore } from "@/lib/store";
+    12→import { api, ApiError } from "@/lib/api";
+    13→import {
+    14→  formatDate,
+    15→  formatMonthLabel,
+    16→  formatPct,
+    17→  formatUsd,
+    18→  timeAgo,
+    19→} from "@/lib/format";
+    20→import {
+    21→  useFormatCurrency,
+    22→  useRates,
+    23→  StatCard,
+    24→  PageHeader,
+    25→  SectionCard,
+    26→  EmptyState,
+    27→  LoadingRows,
+    28→  ErrorBox,
+    29→  ClassBadge,
+    30→  AlertLevelBadge,
+    31→} from "@/components/shared/kit";
+    32→import type { DashboardSummary, HistoryPoint, Transaction } from "@/lib/types";
+    33→import { cn } from "@/lib/utils";
+    34→import { Button } from "@/components/ui/button";
+    35→import { Skeleton } from "@/components/ui/skeleton";
+    36→import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    37→import { Badge } from "@/components/ui/badge";
+    38→import {
+    39→  Area,
+    40→  AreaChart,
+    41→  CartesianGrid,
+    42→  Cell,
+    43→  Pie,
+    44→  PieChart,
+    45→  ResponsiveContainer,
+    46→  Tooltip,
+    47→  XAxis,
+    48→  YAxis,
+    49→} from "recharts";
+    50→import {
+    51→  Wallet,
+    52→  Activity,
+    53→  Landmark,
+    54→  ClipboardCheck,
+    55→  Camera,
+    56→  Loader2,
+    57→  ArrowDownLeft,
+    58→  ArrowUpRight,
+    59→  Scale,
+    60→  Bell,
+    61→  HeartPulse,
+    62→  ShieldCheck,
+    63→  Database,
+    64→} from "lucide-react";
+    65→
+    66→// ------------------------------------------------------------
+    67→// Konstanta kecil
+    68→// ------------------------------------------------------------
+    69→const TX_META: Record<
+    70→  Transaction["type"],
+    71→  { label: string; dir: "in" | "out" | "neutral" }
+    72→> = {
+    73→  buy: { label: "Beli", dir: "in" },
+    74→  sell: { label: "Jual", dir: "out" },
+    75→  transfer_in: { label: "Transfer Masuk", dir: "in" },
+    76→  transfer_out: { label: "Transfer Keluar", dir: "out" },
+    77→  income: { label: "Pemasukan", dir: "in" },
+    78→  expense: { label: "Pengeluaran", dir: "out" },
+    79→  valuation_update: { label: "Update Nilai", dir: "neutral" },
+    80→};
+    81→
+    82→const CLASS_STYLE: Record<string, { label: string; hex: string }> = {
+    83→  crypto: { label: "Kripto", hex: "#f59e0b" },
+    84→  stocks: { label: "Saham", hex: "#10b981" },
+    85→  forex_gold: { label: "Forex/Emas", hex: "#ca8a04" },
+    86→  property: { label: "Properti", hex: "#0d9488" },
+    87→  vehicle: { label: "Kendaraan", hex: "#f97316" },
+    88→  cash: { label: "Kas", hex: "#65a30d" },
+    89→  business: { label: "Bisnis", hex: "#e11d48" },
+    90→};
+    91→
+    92→const CLASS_HEX = CLASS_STYLE;
+    93→const CLASS_LABEL = Object.fromEntries(
+    94→  Object.entries(CLASS_STYLE).map(([k, v]) => [k, v.label]),
+    95→);
+    96→
+    97→// ------------------------------------------------------------
+    98→// DashboardView
+    99→// ------------------------------------------------------------
+   100→export default function DashboardView() {
+   101→  const queryClient = useQueryClient();
+   102→  const user = useAppStore((s) => s.user);
+   103→  const displayCurrency = useAppStore((s) => s.displayCurrency);
+   104→  const formatCurrency = useFormatCurrency();
+   105→  const ratesQuery = useRates();
+   106→
+   107→  const [range, setRange] = React.useState<6 | 12 | 18>(18);
+   108→
+   109→  // ---------- Queries ----------
+   110→  const summaryQuery = useQuery<DashboardSummary, ApiError>({
+   111→    queryKey: ["dashboard", "summary"],
+   112→    queryFn: () => api.dashboardSummary(),
+   113→    refetchInterval: 60_000,
+   114→    staleTime: 50_000,
+   115→  });
+   116→
+   117→  const historyQuery = useQuery<HistoryPoint[], ApiError>({
+   118→    queryKey: ["dashboard", "history"],
+   119→    queryFn: () => api.dashboardHistory(18),
+   120→    refetchInterval: 60_000,
+   121→    staleTime: 50_000,
+   122→  });
+   123→
+   124→  // Status sistem (untuk panic mode) — polling 30s
+   125→  const statusQuery = useQuery({
+   126→    queryKey: ["system-status"],
+   127→    queryFn: () => api.systemStatus(),
+   128→    refetchInterval: 30_000,
+   129→    staleTime: 25_000,
+   130→    retry: false,
+   131→  });
+   132→  const panicOn = statusQuery.data?.panicMode === true;
+   133→
+   134→  const summary = summaryQuery.data;
+   135→  const history = historyQuery.data ?? [];
+   136→  const usdIdr = ratesQuery.data?.USDIDR;
+   137→  const isIdr = displayCurrency === "IDR";
+   138→  const rateReady = !isIdr || (typeof usdIdr === "number" && usdIdr > 0);
+   139→
+   140→  const slicedHistory = React.useMemo(
+   141→    () => (range >= 18 ? history : history.slice(-range)),
+   142→    [history, range],
+   143→  );
+   144→
+   145→  // ---------- Snapshot (owner only) ----------
+   146→  const snapshotMutation = useMutation({
+   147→    mutationFn: () => api.snapshot(),
+   148→    onSuccess: () => {
+   149→      toast.success("Snapshot berhasil dibuat", {
+   150→        description: "Net worth hari ini tersimpan ke histori.",
+   151→      });
+   152→      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+   153→    },
+   154→    onError: (err) => {
+   155→      toast.error("Gagal membuat snapshot", {
+   156→        description: err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi",
+   157→      });
+   158→    },
+   159→  });
+   160→
+   161→  const loadingAll = summaryQuery.isPending && !summary;
+   162→
+   163→  // Ekuivalen mata uang satunya (sub-text StatCard Net Worth)
+   164→  const equivalent = React.useMemo(() => {
+   165→    if (!summary) return null;
+   166→    if (isIdr) {
+   167→      return { label: "USD", text: formatUsd(summary.netWorthUsd) };
+   168→    }
+   169→    if (!usdIdr) return null;
+   170→    return { label: "IDR", text: `≈ Rp ${new Intl.NumberFormat("id-ID").format(Math.round(summary.netWorthUsd * usdIdr))}` };
+   171→  }, [summary, isIdr, usdIdr]);
+   172→
+   173→  const lastSnapshot = history.length > 0 ? history[history.length - 1] : null;
+   174→
+   175→  return (
+   176→    <div className="space-y-6">
+   177→      <PageHeader
+   178→        title="Dashboard"
+   179→        subtitle={
+   180→          user
+   181→            ? `Ringkasan kekayaan keluarga — selamat datang, ${user.name}.`
+   182→            : "Ringkasan kekayaan keluarga."
+   183→        }
+   184→        actions={
+   185→          <span className="text-xs text-muted-foreground">
+   186→            {summaryQuery.isFetching ? "Memperbarui…" : "Diperbarui tiap 60 detik"}
+   187→          </span>
+   188→        }
+   189→      />
+   190→
+   191→      {/* ---------- Error banner (backend down dsb) ---------- */}
+   192→      {summaryQuery.isError && !summary && (
+   193→        <ErrorBox
+   194→          message={
+   195→            summaryQuery.error instanceof ApiError
+   196→              ? summaryQuery.error.message
+   197→              : "Backend belum terjangkau — mencoba lagi"
+   198→          }
+   199→          onRetry={() => void summaryQuery.refetch()}
+   200→        />
+   201→      )}
+   202→
+   203→      {/* ================= 1. StatCards ================= */}
+   204→      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-busy={loadingAll}>
+   205→        <StatCard
+   206→          loading={loadingAll || !rateReady}
+   207→          label="Total Net Worth"
+   208→          value={
+   209→            summary
+   210→              ? formatCurrency(summary.netWorthUsd)
+   211→              : "—"
+   212→          }
+   213→          sub={
+   214→            summary && equivalent && !loadingAll
+   215→              ? `≈ ${equivalent.text} ${equivalent.label}`
+   216→              : undefined
+   217→          }
+   218→          icon={<Wallet className="h-5 w-5" />}
+   219→        />
+   220→        <StatCard
+   221→          loading={loadingAll}
+   222→          label="Perubahan 24 Jam"
+   223→          value={summary ? formatPct(summary.change24hPct) : "—"}
+   224→          accent={summary && summary.change24hPct < 0 ? "rose" : "default"}
+   225→          delta={summary?.change24hPct}
+   226→          sub="vs kemarin"
+   227→          icon={<Activity className="h-5 w-5" />}
+   228→        />
+   229→        <StatCard
+   230→          loading={loadingAll}
+   231→          label="Total Aset"
+   232→          value={summary ? `${summary.counts.assets}` : "—"}
+   233→          sub={
+   234→            summary
+   235→              ? `aset di ${summary.counts.entities} entitas · ${summary.counts.strategies} strategi`
+   236→              : undefined
+   237→          }
+   238→          icon={<Landmark className="h-5 w-5" />}
+   239→        />
+   240→        <StatCard
+   241→          loading={loadingAll}
+   242→          label="Approval Pending"
+   243→          value={summary ? `${summary.counts.pendingApprovals}` : "—"}
+   244→          accent="amber"
+   245→          sub={summary && summary.counts.pendingApprovals > 0 ? "perlu keputusan" : "tidak ada antrean"}
+   246→          icon={<ClipboardCheck className="h-5 w-5" />}
+   247→        />
+   248→      </div>
+   249→
+   250→      {/* ================= 2. Charts ================= */}
+   251→      <div className="grid gap-6 lg:grid-cols-3">
+   252→        {/* ---- Tren Net Worth ---- */}
+   253→        <SectionCard
+   254→          title="Tren Net Worth"
+   255→          description="Nilai bersih portofolio per bulan"
+   256→          className="lg:col-span-2"
+   257→          actions={
+   258→            <Tabs value={String(range)} onValueChange={(v) => setRange(Number(v) as 6 | 12 | 18)}>
+   259→              <TabsList>
+   260→                <TabsTrigger value="6" className="text-xs">6B</TabsTrigger>
+   261→                <TabsTrigger value="12" className="text-xs">12B</TabsTrigger>
+   262→                <TabsTrigger value="18" className="text-xs">18B</TabsTrigger>
+   263→              </TabsList>
+   264→            </Tabs>
+   265→          }
+   266→        >
+   267→          {historyQuery.isError ? (
+   268→            <ErrorBox
+   269→              message={
+   270→                historyQuery.error instanceof ApiError
+   271→                  ? historyQuery.error.message
+   272→                  : "Backend belum terjangkau — mencoba lagi"
+   273→              }
+   274→              onRetry={() => void historyQuery.refetch()}
+   275→            />
+   276→          ) : historyQuery.isPending ? (
+   277→            <Skeleton className="h-[300px] w-full rounded-lg" aria-label="Memuat grafik" />
+   278→          ) : slicedHistory.length === 0 ? (
+   279→            <EmptyState
+   280→              icon={<Activity className="h-6 w-6" />}
+   281→              title="Belum ada histori"
+   282→              description="Ambil snapshot berkala untuk membangun tren net worth."
+   283→            />
+   284→          ) : (
+   285→            <div className="h-[300px] w-full" role="img" aria-label="Grafik tren net worth">
+   286→              <ResponsiveContainer width="100%" height="100%">
+   287→                <AreaChart data={slicedHistory} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+   288→                  <defs>
+   289→                    <linearGradient id="nwFill" x1="0" y1="0" x2="0" y2="1">
+   290→                      <stop offset="0%" stopColor="#10b981" stopOpacity={0.35} />
+   291→                      <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+   292→                    </linearGradient>
+   293→                  </defs>
+   294→                  <CartesianGrid
+   295→                    strokeDasharray="3 3"
+   296→                    stroke="rgba(113,113,122,0.18)"
+   297→                    vertical={false}
+   298→                  />
+   299→                  <XAxis
+   300→                    dataKey="date"
+   301→                    tickFormatter={formatMonthLabel}
+   302→                    tick={{ fill: "#71717a", fontSize: 11 }}
+   303→                    tickLine={false}
+   304→                    axisLine={false}
+   305→                    minTickGap={28}
+   306→                  />
+   307→                  <YAxis
+   308→                    tickFormatter={(v: number) => formatCurrency(v, true)}
+   309→                    tick={{ fill: "#71717a", fontSize: 11 }}
+   310→                    tickLine={false}
+   311→                    axisLine={false}
+   312→                    width={72}
+   313→                    domain={["auto", "auto"]}
+   314→                  />
+   315→                  <Tooltip
+   316→                    cursor={{ stroke: "rgba(113,113,122,0.35)", strokeDasharray: "4 4" }}
+   317→                    contentStyle={{
+   318→                      background: "var(--popover)",
+   319→                      border: "1px solid var(--border)",
+   320→                      borderRadius: 12,
+   321→                      fontSize: 12,
+   322→                      color: "var(--popover-foreground)",
+   323→                      boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+   324→                    }}
+   325→                    labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+   326→                    itemStyle={{ color: "var(--popover-foreground)" }}
+   327→                    formatter={(value) => [formatCurrency(Number(value)), "Net Worth"]}
+   328→                    labelFormatter={(label) => formatMonthLabel(String(label))}
+   329→                  />
+   330→                  <Area
+   331→                    type="monotone"
+   332→                    dataKey="valueUsd"
+   333→                    stroke="#10b981"
+   334→                    strokeWidth={2.5}
+   335→                    fill="url(#nwFill)"
+   336→                    dot={false}
+   337→                    activeDot={{ r: 4, strokeWidth: 0 }}
+   338→                  />
+   339→                </AreaChart>
+   340→              </ResponsiveContainer>
+   341→            </div>
+   342→          )}
+   343→        </SectionCard>
+   344→
+   345→        {/* ---- Alokasi Kelas Aset + Top 5 ---- */}
+   346→        <SectionCard
+   347→          title="Alokasi Kelas Aset"
+   348→          description="Komposisi nilai portofolio"
+   349→        >
+   350→          {summaryQuery.isError && !summary ? (
+   351→            <ErrorBox
+   352→              className="border-0 bg-transparent p-0"
+   353→              message="Data alokasi tidak tersedia"
+   354→            />
+   355→          ) : summaryQuery.isPending || !summary || !rateReady ? (
+   356→            <div className="space-y-4">
+   357→              <Skeleton className="mx-auto h-[200px] w-[200px] rounded-full" />
+   358→              <Skeleton className="h-20 w-full rounded-lg" />
+   359→            </div>
+   360→          ) : summary.byClass.length === 0 ? (
+   361→            <EmptyState
+   362→              title="Belum ada aset"
+   363→              description="Tambahkan aset untuk melihat alokasi kelas."
+   364→            />
+   365→          ) : (
+   366→            <div className="space-y-4">
+   367→              <div className="relative mx-auto h-[190px] w-full max-w-[260px]">
+   368→                <ResponsiveContainer width="100%" height="100%">
+   369→                  <PieChart>
+   370→                    <Pie
+   371→                      data={summary.byClass}
+   372→                      dataKey="valueUsd"
+   373→                      nameKey="class"
+   374→                      innerRadius="62%"
+   375→                      outerRadius="88%"
+   376→                      paddingAngle={2}
+   377→                      strokeWidth={0}
+   378→                    >
+   379→                      {summary.byClass.map((row) => (
+   380→                        <Cell
+   381→                          key={row.class}
+   382→                          fill={CLASS_HEX[row.class]?.hex ?? "#71717a"}
+   383→                        />
+   384→                      ))}
+   385→                    </Pie>
+   386→                    <Tooltip
+   387→                      contentStyle={{
+   388→                        background: "var(--popover)",
+   389→                        border: "1px solid var(--border)",
+   390→                        borderRadius: 12,
+   391→                        fontSize: 12,
+   392→                        color: "var(--popover-foreground)",
+   393→                      }}
+   394→                      labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+   395→                      itemStyle={{ color: "var(--popover-foreground)" }}
+   396→                      formatter={(value, name) => [
+   397→                        formatCurrency(Number(value)),
+   398→                        CLASS_LABEL[String(name)] ?? String(name),
+   399→                      ]}
+   400→                    />
+   401→                  </PieChart>
+   402→                </ResponsiveContainer>
+   403→                {/* Label tengah donut */}
+   404→                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+   405→                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+   406→                    Total
+   407→                  </span>
+   408→                  <span className="text-lg font-semibold tabular-nums">
+   409→                    {formatCurrency(summary.netWorthUsd, true)}
+   410→                  </span>
+   411→                </div>
+   412→              </div>
+   413→
+   414→              {/* Legend */}
+   415→              <ul className="space-y-2" aria-label="Legenda alokasi kelas aset">
+   416→                {summary.byClass.map((row) => {
+   417→                  const style = CLASS_STYLE[row.class];
+   418→                  const down = row.change24hPct < 0;
+   419→                  return (
+   420→                    <li key={row.class} className="flex items-center gap-2 text-sm">
+   421→                      <span
+   422→                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+   423→                        style={{ background: style?.hex ?? "#71717a" }}
+   424→                        aria-hidden="true"
+   425→                      />
+   426→                      <span className="truncate">{style?.label ?? row.class}</span>
+   427→                      <span
+   428→                        className={cn(
+   429→                          "text-xs tabular-nums",
+   430→                          down ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400",
+   431→                        )}
+   432→                      >
+   433→                        {formatPct(row.change24hPct)}
+   434→                      </span>
+   435→                      <span className="ml-auto font-medium tabular-nums">
+   436→                        {formatCurrency(row.valueUsd, true)}
+   437→                      </span>
+   438→                      <span className="w-12 text-right text-xs tabular-nums text-muted-foreground">
+   439→                        {row.pct.toFixed(1).replace(".", ",")}%
+   440→                      </span>
+   441→                    </li>
+   442→                  );
+   443→                })}
+   444→              </ul>
+   445→
+   446→              {/* Top 5 Holdings */}
+   447→              <div className="border-t pt-4">
+   448→                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   449→                  Top 5 Holdings
+   450→                </p>
+   451→                {summary.topHoldings.length === 0 ? (
+   452→                  <p className="text-sm text-muted-foreground">Belum ada posisi.</p>
+   453→                ) : (
+   454→                  <ul className="space-y-3">
+   455→                    {summary.topHoldings.map((h, i) => (
+   456→                      <li key={h.id ?? `${h.name}-${i}`} className="space-y-1.5">
+   457→                        <div className="flex items-center gap-2 text-sm">
+   458→                          <span className="truncate font-medium">{h.name}</span>
+   459→                          <ClassBadge assetClass={h.assetClass} className="text-[10px] px-1.5" />
+   460→                          <span className="ml-auto font-medium tabular-nums">
+   461→                            {formatCurrency(h.valueUsd, true)}
+   462→                          </span>
+   463→                        </div>
+   464→                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+   465→                          <div
+   466→                            className="h-full rounded-full bg-emerald-500"
+   467→                            style={{ width: `${Math.min(100, Math.max(2, h.pct))}%` }}
+   468→                          />
+   469→                        </div>
+   470→                      </li>
+   471→                    ))}
+   472→                  </ul>
+   473→                )}
+   474→              </div>
+   475→            </div>
+   476→          )}
+   477→        </SectionCard>
+   478→      </div>
+   479→
+   480→      {/* ================= 3. Transaksi + Alert ================= */}
+   481→      <div className="grid gap-6 lg:grid-cols-3">
+   482→        <SectionCard
+   483→          title="Transaksi Terakhir"
+   484→          description="6 aktivitas terbaru"
+   485→          className="lg:col-span-2"
+   486→        >
+   487→          {summaryQuery.isPending && !summary ? (
+   488→            <LoadingRows rows={5} />
+   489→          ) : !summary || summary.recentTransactions.length === 0 ? (
+   490→            <EmptyState
+   491→              icon={<ArrowUpRight className="h-6 w-6" />}
+   492→              title="Belum ada transaksi"
+   493→              description="Transaksi buy/sell dan transfer akan tampil di sini."
+   494→            />
+   495→          ) : (
+   496→            <ul className="divide-y">
+   497→              {summary.recentTransactions.map((tx) => {
+   498→                const meta = TX_META[tx.type] ?? { label: tx.type, dir: "neutral" as const };
+   499→                const inflow = meta.dir === "in";
+   500→                const neutral = meta.dir === "neutral";
+   501→                const Icon = neutral ? Scale : inflow ? ArrowDownLeft : ArrowUpRight;
+   502→                return (
+   503→                  <li key={tx.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+   504→                    <span
+   505→                      className={cn(
+   506→                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+   507→                        neutral && "bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+   508→                        !neutral && inflow && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+   509→                        !neutral && !inflow && "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+   510→                      )}
+   511→                      aria-hidden="true"
+   512→                    >
+   513→                      <Icon className="h-4 w-4" />
+   514→                    </span>
+   515→                    <div className="min-w-0 flex-1">
+   516→                      <p className="truncate text-sm font-medium">{tx.assetName}</p>
+   517→                      <p className="text-xs text-muted-foreground">
+   518→                        {formatDate(tx.at)} · {timeAgo(tx.at)}
+   519→                      </p>
+   520→                    </div>
+   521→                    <Badge variant="outline" className="hidden shrink-0 sm:inline-flex">
+   522→                      {meta.label}
+   523→                    </Badge>
+   524→                    <span
+   525→                      className={cn(
+   526→                        "w-28 shrink-0 text-right text-sm font-medium tabular-nums",
+   527→                        neutral && "text-muted-foreground",
+   528→                        !neutral && inflow && "text-emerald-600 dark:text-emerald-400",
+   529→                        !neutral && !inflow && "text-rose-600 dark:text-rose-400",
+   530→                      )}
+   531→                    >
+   532→                      {neutral ? "" : inflow ? "+" : "−"}
+   533→                      {formatCurrency(Math.abs(tx.totalUsd), true)}
+   534→                    </span>
+   535→                  </li>
+   536→                );
+   537→              })}
+   538→            </ul>
+   539→          )}
+   540→        </SectionCard>
+   541→
+   542→        <SectionCard
+   543→          title="Pusat Notifikasi"
+   544→          description="Alert sistem & trading"
+   545→          actions={<Bell className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+   546→        >
+   547→          {summaryQuery.isPending && !summary ? (
+   548→            <LoadingRows rows={5} />
+   549→          ) : !summary || summary.alerts.length === 0 ? (
+   550→            <EmptyState
+   551→              icon={<Bell className="h-6 w-6" />}
+   552→              title="Tidak ada notifikasi"
+   553→              description="Semua sistem berjalan normal."
+   554→            />
+   555→          ) : (
+   556→            <ul className="space-y-3">
+   557→              {summary.alerts.map((a) => (
+   558→                <li key={a.id} className="flex items-start gap-3">
+   559→                  <AlertLevelBadge level={a.level} className="mt-0.5 shrink-0" />
+   560→                  <div className="min-w-0">
+   561→                    <p className="text-sm leading-snug">{a.message}</p>
+   562→                    <p className="mt-0.5 text-xs text-muted-foreground">
+   563→                      {a.source ? `${a.source} · ` : ""}
+   564→                      {timeAgo(a.createdAt)}
+   565→                    </p>
+   566→                  </div>
+   567→                </li>
+   568→              ))}
+   569→            </ul>
+   570→          )}
+   571→        </SectionCard>
+   572→      </div>
+   573→
+   574→      {/* ================= 4. Kesehatan Platform ================= */}
+   575→      <SectionCard
+   576→        title="Kesehatan Platform"
+   577→        description="Status sistem & snapshot data"
+   578→        contentClassName="px-6 pb-6"
+   579→      >
+   580→        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+   581→          <div className="grid gap-4 sm:grid-cols-3 sm:gap-8">
+   582→            <div className="flex items-start gap-3">
+   583→              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" aria-hidden="true">
+   584→                <HeartPulse className="h-4 w-4" />
+   585→              </span>
+   586→              <div>
+   587→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Panic Mode</p>
+   588→                {panicOn ? (
+   589→                  <Badge className="mt-1 border-transparent bg-rose-500/15 text-rose-600 dark:text-rose-400">
+   590→                    <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+   591→                    Aktif — mutasi dibekukan
+   592→                  </Badge>
+   593→                ) : (
+   594→                  <Badge className="mt-1 border-transparent bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+   595→                    Normal
+   596→                  </Badge>
+   597→                )}
+   598→              </div>
+   599→            </div>
+   600→
+   601→            <div className="flex items-start gap-3">
+   602→              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400" aria-hidden="true">
+   603→                <Database className="h-4 w-4" />
+   604→              </span>
+   605→              <div>
+   606→                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+   607→                  Snapshot Terakhir
+   608→                </p>
+   609→                <p className="mt-1 text-sm font-medium tabular-nums">
+   610→                  {lastSnapshot
+   611→                    ? `${formatMonthLabel(lastSnapshot.date)} — ${formatCurrency(lastSnapshot.valueUsd, true)}`
+   612→                    : "Belum ada snapshot"}
+   613→                </p>
+   614→              </div>
+   615→            </div>
+   616→
+   617→            <div className="flex items-start gap-3">
+   618→              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-500/10 text-zinc-600 dark:text-zinc-300" aria-hidden="true">
+   619→                <Activity className="h-4 w-4" />
+   620→              </span>
+   621→              <div>
+   622→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Kurs</p>
+   623→                <p className="mt-1 text-sm font-medium tabular-nums">
+   624→                  {usdIdr ? `USD 1 = Rp ${usdIdr.toLocaleString("id-ID")}` : "—"}
+   625→                </p>
+   626→              </div>
+   627→            </div>
+   628→          </div>
+   629→
+   630→          {user?.role === "owner" && (
+   631→            <Button
+   632→              type="button"
+   633→              size="sm"
+   634→              className="min-h-[40px] shrink-0 bg-emerald-600 text-white hover:bg-emerald-700"
+   635→              onClick={() => snapshotMutation.mutate()}
+   636→              disabled={snapshotMutation.isPending}
+   637→              aria-label="Ambil snapshot net worth hari ini"
+   638→            >
+   639→              {snapshotMutation.isPending ? (
+   640→                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   641→              ) : (
+   642→                <Camera className="h-4 w-4" aria-hidden="true" />
+   643→              )}
+   644→              Ambil Snapshot
+   645→            </Button>
+   646→          )}
+   647→        </div>
+   648→      </SectionCard>
+   649→    </div>
+   650→  );
+   651→}
+   652→

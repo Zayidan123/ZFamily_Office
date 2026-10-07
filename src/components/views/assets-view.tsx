@@ -14,7 +14,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
 import { apiFetch, ApiError } from "@/lib/api";
-import { formatUsd, formatIdr, formatPct, formatNumber, formatDateTime } from "@/lib/format";
+import { formatUsd, formatIdr, formatPct, formatNumber, formatDate, formatDateTime } from "@/lib/format";
 import {
   useFormatCurrency,
   PageHeader,
@@ -26,7 +26,7 @@ import {
   ASSET_CLASS_STYLE,
   ConfirmButton,
 } from "@/components/shared/kit";
-import type { Asset, AssetClass, AssetClassRow, Entity } from "@/lib/types";
+import type { Asset, AssetClass, AssetClassRow, AssetPnl, Entity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -530,6 +530,210 @@ function AssetFormDialog({
 }
 
 // ------------------------------------------------------------
+// Section PnL FIFO (dialog detail aset) — Task U-b
+// GET /assets/{id}/pnl · RBAC: executor 403 → section disembunyikan
+// ------------------------------------------------------------
+
+function pnlValueClass(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v) || v === 0) return "";
+  return v > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+}
+
+function PnlMiniStat({
+  label,
+  value,
+  sub,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border bg-muted/30 p-2.5">
+      <p className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground" title={label}>
+        {label}
+      </p>
+      <p
+        className={cn("mt-0.5 truncate text-sm font-semibold tabular-nums", valueClass)}
+        title={value}
+      >
+        {value}
+      </p>
+      {sub !== undefined && (
+        <p className="mt-0.5 truncate text-[10px] tabular-nums text-muted-foreground" title={sub}>
+          {sub}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LotTypeBadge({ type }: { type: string }) {
+  const t = (type || "").toLowerCase();
+  const isBuy = t === "buy" || t === "transfer_in" || t === "income";
+  const isSell = t === "sell" || t === "transfer_out" || t === "expense";
+  const label = t === "buy" ? "Beli" : t === "sell" ? "Jual" : type || "—";
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "px-1.5 text-[10px]",
+        isBuy && "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+        isSell && "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+        !isBuy && !isSell && "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+      )}
+    >
+      {label}
+    </Badge>
+  );
+}
+
+function AssetPnlSection({ assetId }: { assetId: string }) {
+  const formatCurrency = useFormatCurrency();
+
+  const pnlQuery = useQuery<AssetPnl, ApiError>({
+    queryKey: ["assets", "pnl", String(assetId)],
+    queryFn: () => apiFetch<AssetPnl>(`/assets/${assetId}/pnl`),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  // Error: executor 403 → section disembunyikan; lainnya → error inline ringan
+  if (pnlQuery.isError) {
+    if (pnlQuery.error instanceof ApiError && pnlQuery.error.status === 403) return null;
+    return (
+      <div className="border-t pt-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Basis Biaya &amp; PnL (FIFO)
+        </p>
+        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+          <p className="min-w-0 truncate text-xs text-rose-600 dark:text-rose-400">
+            Gagal memuat PnL — {errMsg(pnlQuery.error)}
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 px-2 text-xs"
+            onClick={() => void pnlQuery.refetch()}
+          >
+            Coba lagi
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const pnl = pnlQuery.data;
+
+  // Loading — skeleton mini
+  if (pnlQuery.isPending || !pnl) {
+    return (
+      <div className="border-t pt-4" aria-busy="true" aria-label="Memuat basis biaya & PnL">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Basis Biaya &amp; PnL (FIFO)
+        </p>
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-[58px] w-full rounded-lg" />
+          ))}
+        </div>
+        <Skeleton className="mt-2 h-16 w-full rounded-lg" />
+      </div>
+    );
+  }
+
+  const hasLots = pnl.lots.length > 0;
+
+  return (
+    <div className="border-t pt-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Basis Biaya &amp; PnL (FIFO)
+        </p>
+        {pnl.symbol && (
+          <span className="text-[10px] font-medium text-muted-foreground">{pnl.symbol}</span>
+        )}
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <PnlMiniStat
+          label="Realized PnL"
+          value={formatCurrency(pnl.realizedPnlUsd)}
+          valueClass={pnlValueClass(pnl.realizedPnlUsd)}
+        />
+        <PnlMiniStat
+          label="Avg Cost"
+          value={pnl.avgCostUsd === null ? "—" : formatCurrency(pnl.avgCostUsd)}
+          valueClass={pnl.avgCostUsd === null ? "text-muted-foreground" : undefined}
+        />
+        <PnlMiniStat
+          label="Cost Basis Tersisa"
+          value={formatCurrency(pnl.costBasisUsd)}
+          sub={`sisa ${formatNumber(pnl.remainingQty, 6)} unit`}
+        />
+        <PnlMiniStat
+          label="Unrealized PnL"
+          value={
+            pnl.unrealizedPnlUsd === null ? "—" : formatCurrency(pnl.unrealizedPnlUsd)
+          }
+          valueClass={pnlValueClass(pnl.unrealizedPnlUsd)}
+          sub={pnl.unrealizedPnlPct === null ? undefined : formatPct(pnl.unrealizedPnlPct)}
+        />
+      </div>
+
+      {!hasLots ? (
+        <EmptyState
+          title="Belum ada riwayat buy"
+          description="Basis biaya belum terbentuk — catat transaksi buy untuk aset ini."
+          className="mt-3 py-6"
+        />
+      ) : (
+        <div className="mt-3">
+          <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Lot Tersisa
+          </p>
+          <div className="max-h-40 overflow-auto rounded-lg border scrollbar-thin">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[92px]">Tanggal</TableHead>
+                  <TableHead className="w-[72px]">Tipe</TableHead>
+                  <TableHead className="text-right">Qty</TableHead>
+                  <TableHead className="text-right">Harga</TableHead>
+                  <TableHead className="text-right">Sisa Qty</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pnl.lots.map((lot, i) => (
+                  <TableRow key={`${lot.at}-${i}`}>
+                    <TableCell className="text-xs">{formatDate(lot.at)}</TableCell>
+                    <TableCell>
+                      <LotTypeBadge type={lot.type} />
+                    </TableCell>
+                    <TableCell className="text-right text-xs tabular-nums">
+                      {formatNumber(lot.qty, 6)}
+                    </TableCell>
+                    <TableCell className="text-right text-xs tabular-nums">
+                      {formatCurrency(lot.priceUsd)}
+                    </TableCell>
+                    <TableCell className="text-right text-xs tabular-nums">
+                      {formatNumber(lot.remainingQty, 6)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
 // Dialog Detail Aset
 // ------------------------------------------------------------
 function AssetDetailDialog({
@@ -592,6 +796,9 @@ function AssetDetailDialog({
               </DetailRow>
               <DetailRow label="Diperbarui">{formatDateTime(asset.updatedAt)}</DetailRow>
             </div>
+
+            {/* Basis Biaya & PnL (FIFO) — Task U-b */}
+            <AssetPnlSection assetId={asset.id} />
           </>
         )}
       </DialogContent>

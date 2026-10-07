@@ -283,6 +283,78 @@ export interface Capsule {
   content: string | null;
 }
 
+// ---------- PnL FIFO per aset (v1.4.0 — Task U-a/U-b) ----------
+export interface AssetPnlLot {
+  at: string;
+  type: string; // "buy" | "sell" | …
+  qty: number;
+  priceUsd: number;
+  remainingQty: number;
+}
+
+export interface AssetPnl {
+  assetId: number | string; // backend kirim numeric id
+  assetName: string;
+  symbol?: string | null;
+  currency: string;
+  realizedPnlUsd: number;
+  /** null jika aset tanpa riwayat buy (basis biaya belum terbentuk) */
+  avgCostUsd: number | null;
+  remainingQty: number;
+  costBasisUsd: number;
+  /** null jika tanpa lot */
+  unrealizedPnlUsd: number | null;
+  unrealizedPnlPct: number | null;
+  lots: AssetPnlLot[];
+}
+
+// ---------- Laporan Kinerja Bulanan (v1.4.0 — Task U-a/U-b) ----------
+export interface MonthlyReportRow {
+  month: string; // "2026-01"
+  startUsd: number;
+  endUsd: number;
+  changeUsd: number;
+  changePct: number;
+  inflowUsd: number;
+  outflowUsd: number;
+  netFlowUsd: number;
+  txCount: number;
+}
+
+export interface ReportBestWorstMonth {
+  month: string;
+  changeUsd: number;
+}
+
+export interface MonthlyReportSummary {
+  totalChangeUsd: number;
+  totalChangePct: number;
+  bestMonth: ReportBestWorstMonth | null;
+  worstMonth: ReportBestWorstMonth | null;
+  avgMonthlyChangeUsd: number;
+  totalInflowUsd: number;
+  totalOutflowUsd: number;
+}
+
+export interface MonthlyReport {
+  months: MonthlyReportRow[];
+  summary: MonthlyReportSummary;
+}
+
+// ---------- Notifikasi: status dibaca (v1.4.0 — Task U-a/U-b) ----------
+/** AlertItem + status dibaca (opsional agar backward-compatible dengan shape lama). */
+export interface AlertItemWithRead extends AlertItem {
+  isRead?: boolean;
+}
+
+/** Baris GET /trading/alerts (v1.4.0 — punya isRead: boolean). */
+export type TradingAlertRow = AlertItemWithRead;
+
+/** Respons GET /trading/alerts/unread-count. */
+export interface UnreadCount {
+  unread: number;
+}
+
 // ---------- Dashboard ----------
 export interface DashboardByClassRow {
   class: AssetClass;

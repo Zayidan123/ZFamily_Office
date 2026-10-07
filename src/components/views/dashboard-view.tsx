@@ -9,7 +9,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
-import { api, ApiError } from "@/lib/api";
+import { api, apiFetch, ApiError } from "@/lib/api";
 import {
   formatDate,
   formatMonthLabel,
@@ -29,7 +29,14 @@ import {
   ClassBadge,
   AlertLevelBadge,
 } from "@/components/shared/kit";
-import type { DashboardSummary, HistoryPoint, Transaction } from "@/lib/types";
+import type {
+  AlertItemWithRead,
+  DashboardSummary,
+  HistoryPoint,
+  TradingAlertRow,
+  Transaction,
+  UnreadCount,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -58,6 +65,8 @@ import {
   ArrowUpRight,
   Scale,
   Bell,
+  Check,
+  CheckCheck,
   HeartPulse,
   ShieldCheck,
   Database,
@@ -131,7 +140,68 @@ export default function DashboardView() {
   });
   const panicOn = statusQuery.data?.panicMode === true;
 
+  // ---------- Notifikasi: status dibaca (Task U-b) ----------
+  const isExecutor = user?.role === "executor";
+  const canManageRead = !!user && !isExecutor; // owner/advisor/beneficiary
+
+  const unreadQuery = useQuery<UnreadCount, ApiError>({
+    queryKey: ["trading", "alerts", "unread-count"],
+    queryFn: () => apiFetch<UnreadCount>("/trading/alerts/unread-count"),
+    enabled: canManageRead,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+    retry: false, // executor 403 → badge disembunyikan
+  });
+  const unread = unreadQuery.data?.unread ?? 0;
+
+  // Peta isRead per id (dari /trading/alerts) — merge ke summary.alerts yang
+  // mungkin belum membawa isRead (backward-compatible).
+  const tradingAlertsQuery = useQuery<TradingAlertRow[], ApiError>({
+    queryKey: ["trading", "alerts"],
+    queryFn: () => apiFetch<TradingAlertRow[]>("/trading/alerts", { params: { limit: 50 } }),
+    enabled: canManageRead,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+    retry: false,
+  });
+  const readMap = React.useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const r of tradingAlertsQuery.data ?? []) {
+      if (r?.id !== undefined && r.isRead !== undefined) m.set(String(r.id), r.isRead);
+    }
+    return m;
+  }, [tradingAlertsQuery.data]);
+
+  const markReadM = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<unknown>(`/trading/alerts/${id}/read`, { method: "POST" }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["trading", "alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err) => {
+      toast.error("Gagal menandai dibaca", {
+        description: err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi",
+      });
+    },
+  });
+
+  const markAllReadM = useMutation({
+    mutationFn: () => apiFetch<unknown>("/trading/alerts/read-all", { method: "POST" }),
+    onSuccess: () => {
+      toast.success("Semua notifikasi ditandai dibaca");
+      void queryClient.invalidateQueries({ queryKey: ["trading", "alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err) => {
+      toast.error("Gagal menandai semua dibaca", {
+        description: err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi",
+      });
+    },
+  });
+
   const summary = summaryQuery.data;
+  const summaryAlerts = (summary?.alerts ?? []) as AlertItemWithRead[];
   const history = historyQuery.data ?? [];
   const usdIdr = ratesQuery.data?.USDIDR;
   const isIdr = displayCurrency === "IDR";
@@ -542,31 +612,98 @@ export default function DashboardView() {
         <SectionCard
           title="Pusat Notifikasi"
           description="Alert sistem & trading"
-          actions={<Bell className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+          actions={
+            <div className="flex items-center gap-2">
+              {canManageRead && unread > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                  title={`${unread} notifikasi belum dibaca`}
+                >
+                  {unread} baru
+                </Badge>
+              )}
+              <Bell className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            </div>
+          }
         >
           {summaryQuery.isPending && !summary ? (
             <LoadingRows rows={5} />
-          ) : !summary || summary.alerts.length === 0 ? (
+          ) : summaryAlerts.length === 0 ? (
             <EmptyState
               icon={<Bell className="h-6 w-6" />}
               title="Tidak ada notifikasi"
               description="Semua sistem berjalan normal."
             />
           ) : (
-            <ul className="space-y-3">
-              {summary.alerts.map((a) => (
-                <li key={a.id} className="flex items-start gap-3">
-                  <AlertLevelBadge level={a.level} className="mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-sm leading-snug">{a.message}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {a.source ? `${a.source} · ` : ""}
-                      {timeAgo(a.createdAt)}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-3">
+              <ul className="space-y-3">
+                {summaryAlerts.map((a) => {
+                  const knownRead =
+                    canManageRead &&
+                    (a.isRead === true || readMap.get(String(a.id)) === true);
+                  const unreadItem =
+                    canManageRead &&
+                    (a.isRead === false || readMap.get(String(a.id)) === false);
+                  // Hanya alert trading (ada di /trading/alerts) yang bisa POST read
+                  const markable = canManageRead && readMap.has(String(a.id));
+                  return (
+                    <li
+                      key={a.id}
+                      className={cn("flex items-start gap-3", knownRead && "opacity-70")}
+                    >
+                      {canManageRead && (
+                        <span
+                          className={cn(
+                            "mt-2.5 h-2 w-2 shrink-0 rounded-full",
+                            unreadItem ? "bg-emerald-500" : "bg-transparent",
+                          )}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <AlertLevelBadge level={a.level} className="mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm leading-snug">{a.message}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {a.source ? `${a.source} · ` : ""}
+                          {timeAgo(a.createdAt)}
+                        </p>
+                      </div>
+                      {unreadItem && markable && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          title="Tandai sudah dibaca"
+                          aria-label="Tandai sudah dibaca"
+                          disabled={markReadM.isPending}
+                          onClick={() => markReadM.mutate(String(a.id))}
+                        >
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {canManageRead && unread > 0 && (
+                <div className="border-t pt-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => markAllReadM.mutate()}
+                    disabled={markAllReadM.isPending}
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                    Tandai semua dibaca
+                  </Button>
+                </div>
+              )}
+            </div>
           )}
         </SectionCard>
       </div>

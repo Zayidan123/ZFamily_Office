@@ -512,3 +512,87 @@ Stage Summary:
 - Keadaan bersih: 4 seed alert utuh, data uji dihapus, theme light, paper $100k, MFA off semua user.
 - Gotcha: screenshot chart setelah reload bisa menangkap animasi recharts (tunggu ±2 dtk sebelum menilai); fuser tak tersedia — kill backend via PID dari ss -ltnp.
 - Rekomendasi ronde #4: cost basis FIFO/LIFO per aset + realized PnL, tombol "tandai dibaca" pusat notifikasi, laporan kinerja bulanan (halaman ringkas + export), audit dark-mode lanjutan per-view, truncate nilai StatCard mobile di kit.tsx.
+
+---
+Task ID: U-a
+Agent: backend-fifo-reports-readflags
+Task: Backend 3 penambahan ke :8001 — (1) Cost basis FIFO per aset + (2) Laporan Kinerja Bulanan (+CSV) di router analytics baru, (3) Notifikasi tandai dibaca (isRead) di tabel alerts — TANPA merusak endpoint existing.
+
+Work Log:
+- Baca worklog.md (kontrak v1 + gotcha: kill backend via PID dari `ss -ltnp`, BUKAN pkill -f; pkill -f "family-office-api" tak efektif) + kode: db.py (DDL idempotent + _migrate_users_mfa via PRAGMA table_info), routers/assets_tx.py (skema transactions & assets — price_usd/total_usd SUDAH tersimpan hasil konversi saat insert), routers/export.py (pola CSV mentah), routers/trading.py (tabel alerts + READ_ROLES), routers/alerts_price.py (penulis rows alerts), security.py (require_auth RBAC), main.py, seed.py (78 snapshot mingguan 18 bulan; transaksi BTCX).
+- db.py: migrasi idempotent baru `_migrate_alerts_read` — ALTER TABLE alerts ADD COLUMN `isRead INTEGER NOT NULL DEFAULT 0` via PRAGMA table_info (pola MFA_COLUMNS); dipanggil di create_tables() setelah _migrate_users_mfa. Aman untuk DB existing & fresh.
+- routers/analytics.py BARU (tag "analytics", prefix /api/v1 via main.py):
+  - GET /assets/{id}/pnl — engine FIFO: buy/transfer_in buat lot; sell/transfer_out konsumsi lot terlama (realized = (sellPrice − lotCost) × qty dikonsumsi, dijumlah); income/expense/valuation_update diabaikan; sell melebihi lot → sisa diabaikan (tanpa short). avgCostUsd = costBasis/remainingQty dari sisa lot; unrealized pakai harga live unitPriceUsd (prices.price_asset — sumber sama dengan /assets). lots = sisa lot only (remainingQty > 0), oldest first. 404 bila aset tak ada. RBAC owner/beneficiary/advisor (executor 403).
+  - GET /reports/monthly?months=12 (clamp 3..24) — bucket kalender dari portfolio_snapshots + flow transaksi.
+  - GET /reports/monthly.csv?months=12 — CSV MENTAH (pola export.py: Response text/csv + Content-Disposition laporan-kinerja-YYYYMM.csv; audit "reports.export").
+- main.py: import + include analytics.router; VERSION 1.3.0 → 1.4.0 (konvensi bump tiap task backend).
+- routers/trading.py: GET /trading/alerts kini mengembalikan field tambahan `isRead` (boolean JSON dari kolom 0/1) — field existing TIDAK diubah (regresi dashboard aman, dashboard.py query sendiri dan tak tersentuh). Endpoint baru: GET /trading/alerts/unread-count → {unread}; POST /trading/alerts/{id}/read (404 bila id bukan alert trading; idempotent); POST /trading/alerts/read-all. Kedua POST panic-guard (423) + audit "alert.read"/"alert.read_all". RBAC = READ_ROLES (owner/beneficiary/advisor).
+- Verifikasi penuh: restart aman (kill PID 25178 listener 8001 via ss -ltnp → sleep 1 → setsid --fork nohup bun run dev > api.log → sleep 4 → health 1.4.0).
+
+Verifikasi (curl):
+- REGRESI 200 semua: /rates, login owner 1 langkah (token 155 char), /dashboard/summary, /assets, /market/watchlist, /market/alerts, /trading/paper/account, /auth/mfa/status; /trading/alerts tetap berisi 5 rows trading + field baru isRead:false.
+- PNL asset 1 (BTC Binance) diverifikasi manual via sqlite: 9 lot in (0.3 BTC), transfer_out 0.08 @95000 mengonsumsi lot#1-4 (realized 2167.00), sell 0.01 @96000 dari lot#5 @79629 (realized 163.71) → realizedPnlUsd 2330.71 ✓; sisa 5 lot (0.215 BTC, oldest = 0.01 @79629) → costBasisUsd 19565.11, avgCostUsd 91000.51 ✓; unrealized = (live − avgCost) × 0.215.
+- Aset tanpa transaksi (asset 2 Ledger): remainingQty = 0.5 (qty aset sekarang), costBasisUsd 0, avgCostUsd null, unrealizedPnlUsd null, unrealizedPnlPct null, lots [] ✓. Asset 999 → 404.
+- REPORTS: months=12 → 12 bucket 2025-11..2026-10, startUsd bulan = endUsd bulan sebelumnya (kontinu diverifikasi semua bulan); 2026-09 cross-check sqlite: inflow 16027.62 (buy 1847.34 + income 230.28 + transfer_in 13950), outflow 7600, txCount 6 (termasuk 2 valuation_update tanpa flow) ✓; summary (best 2026-01 +42331.69, worst 2025-11 −32130.52) benar. CSV: header + 12 baris, filename laporan-kinerja-202610.csv. Clamp: months=2 → 3 bucket; months=100 → 24 (19 bulan berisi snapshot).
+- READ: unread-count 5 → POST read #3 → 4 → read-all {updated:4} → 0 → POST read #9999 → 404. isRead terlihat di list.
+- RBAC: executor pnl/monthly/csv/unread-count = 403 semua; advisor & beneficiary = 200 (advisor CSV 200).
+- Panic ON → POST read & read-all = 423 (GET tetap 200) → OFF → POST read 200. panicMode kembali false.
+- Audit terisi: alert.read, alert.read_all, reports.export (dgn user+role). `grep -c Traceback api.log` = 0.
+- Cleanup data uji: flag isRead dikembalikan 0 untuk semua alerts (seed-default, unread=5) agar frontend bisa demo alur unread; audit log dibiarkan (append-only).
+
+Stage Summary:
+- Backend v1.4.0: 3 fitur baru LIVE — cost basis FIFO per aset, laporan kinerja bulanan + CSV, notifikasi tandai dibaca — tanpa perubahan pada endpoint/shape existing (hanya field tambahan isRead di /trading/alerts).
+- Keputusan desain:
+  (1) Konversi USD FIFO memakai kolom price_usd yang tersimpan di transactions (dihitung saat insert oleh assets_tx.py: price currency aset / USDIDR bila IDR) — tidak ada konversi ulang, konsisten dgn seluruh backend.
+  (2) Aset tanpa transaksi lot: remainingQty = quantity aset sekarang, costBasisUsd = 0, avgCostUsd/unrealizedPnlUsd/unrealizedPnlPct = null — tanpa histori lot tidak ada dasar biaya; mengisi avgCost dengan harga live akan membuat unrealized = 0 yang menyesatkan. Asset dgn tx tapi semua lot terkonsumsi: remainingQty 0, avgCost/unrealized null juga.
+  (3) Laporan bulanan: startUsd = endUsd bulan sebelumnya (carry-over; bulan pertama pakai snapshot terakhir sebelum window, fallback snapshot pertama bulan itu) — lebih benar utk "perubahan bulan ini" dan tetap sederhana; bulan tanpa snapshot DILEWATI (tidak merekayasa start=end); summary.totalChangeUsd = Σ changeUsd antar-bulan, totalChangePct vs startUsd bulan pertama; txCount menghitung SEMUA transaksi (valuation_update ikut hitung tapi bukan flow); inflow = buy+transfer_in+income, outflow = sell+transfer_out+expense (basis total_usd).
+  (4) unread-count & read-all di-scope ke kind='trading' (konsisten namespace /trading/alerts — list-nya juga trading only); alert system (dashboard) belum punya alur read.
+  (5) POST read idempotent (re-read → 200 tanpa error); sell/transfer_out melebihi total lot tidak menghasilkan posisi negatif.
+- Catatan agent berikutnya: (1) kolom baru alerts.isRead NOT NULL DEFAULT 0 — INSERT lama/tanpa kolom otomatis unread; (2) /trading/alerts sekarang punya isRead boolean — frontend tinggal badge "belum dibaca" + tombol read/read-all; (3) CSV laporan = response MENTAH — frontend wajib fetch/blob + Bearer (bukan apiFetch envelope), sama seperti /transactions/export.csv; (4) FIFO pakai urutan `at ASC, id ASC` — timestamp ISO dgn/millis keduanya aman utk month-key substr(at,1,7); (5) fitur ini Read-only kecuali 2 POST read (panic-guard) — tidak ada endpoint mutasi baru lain; (6) rekomendasi lanjutan: halaman frontend "Kinerja" (chart monthly + tombol export CSV), badge unread di sidebar/dashboard, tombol "tandai dibaca" per notifikasi.
+
+---
+
+Task ID: U-b
+Agent: frontend-pnl-reports-read (RETRY — attempt 2)
+Task: Frontend 4 UI di atas backend v1.4.0 — (1) Section PnL FIFO di dialog detail aset, (2) Tab "Laporan Kinerja" di Portofolio, (3) Tandai dibaca di Pusat Notifikasi Dashboard, (4) StatCard proteksi overflow.
+
+Work Log:
+- RETRY context: attempt 1 selesai menulis kode (4 file di bawah + types) namun mati karena timeout jaringan SEBELUM verifikasi browser final & append worklog. Attempt 2: audit seluruh kode attempt 1 (lengkap, tidak ada file parsial) → perbaikan kecil 1 type → verifikasi ulang menyeluruh.
+- Baca worklog U-a (shape endpoint terverifikasi + gotcha recharts itemStyle var tema + dialog max-h global) + kode: assets-view, portfolio-view, dashboard-view, kit.tsx, api.ts (apiGetBlob ada), types.ts, format.ts (formatMonthLabel + formatCurrency compact), store.ts.
+- src/lib/types.ts (tambahan saja): AssetPnlLot, AssetPnl (avgCostUsd/unrealized* nullable utk aset tanpa lot), MonthlyReportRow, ReportBestWorstMonth, MonthlyReportSummary, MonthlyReport, AlertItemWithRead (isRead opsional — backward-compatible), TradingAlertRow, UnreadCount. Fix attempt-2: AssetPnl.assetId string → number | string (backend kirim numeric).
+- assets-view.tsx: komponen AssetPnlSection (fetch /assets/{id}/pnl via useQuery ["assets","pnl",id], hanya mount saat dialog terbuka), 4 PnlMiniStat (Realized ±, Avg Cost "—" bila null, Cost Basis Tersisa + sisa unit, Unrealized ± + pct), tabel Lot Tersisa (max-h-40 overflow, sticky header, badge Beli/Jual emerald/rose), EmptyState kecil "Belum ada riwayat buy" utk aset tanpa lot, skeleton saat pending, error inline ringan + tombol Coba lagi; executor 403 → section return null (sembunyi).
+- portfolio-view.tsx: konten existing dibungkus Tabs defaultValue="risiko" (motion fade tetap); tab "Laporan Kinerja" → ReportsPerformancePanel: 4 StatCard (Perubahan N Bulan ±, Bulan Terbaik, Bulan Terburuk, Rata-rata Bulanan), BarChart Δ per bulan (Cell fill emerald #10b981 / rose #f43f5e; Tooltip contentStyle+itemStyle pakai var(--popover) dll per gotcha var() invalid di SVG attr), tabel bulanan 8 kolom (max-h-80 overflow sticky header), Select periode 6/12/18/24 (refetch per periode), tombol "Ekspor CSV Laporan" → apiGetBlob → a.download `laporan-kinerja-YYYYMM.csv` + toast sukses (size KB) / gagal; executor → EmptyState "Akses terbatas" (query disabled).
+- dashboard-view.tsx: Pusat Notifikasi — unread-count polling 30s (enabled utk non-executor; retry:false → executor 403 sunyi), badge "N baru" amber di header kartu; merge isRead dari /trading/alerts ke summary.alerts via readMap (backward-compatible bila summary belum bawa isRead); dot emerald utk item unread + tombol icon Check per item (markable = id ada di /trading/alerts) → POST read → invalidate ["trading","alerts"]+["dashboard"]; text-button "Tandai semua dibaca" (CheckCheck) → POST read-all + toast; item isRead → opacity-70. Layout kartu existing tidak diubah (badge hanya ditambahkan di actions).
+- kit.tsx: StatCard — wrapper nilai <div min-w-0> + <span block truncate title={fullText}> (full text via nodeToText helper); sub juga truncate. API komponen tidak berubah; semua view existing aman.
+
+Verifikasi (attempt 2, semua ulang):
+- curl owner :8001: PNL asset 1 → realized 2330.71, avgCost 91000.51, costBasis 19565.11, sisa 0.215, 5 lot (oldest 0.02 @79629 sisa 0.01) ✓ sama persis dgn UI dialog; Ledger (asset 2) → avgCost null, unrealized null, lots [] ✓; monthly 12 → 12 bucket + summary (total 151777.94 / +6.41%, best Jan26 +42331.69, worst Nov25 −32130.52, avg 12648.16) ✓ = angka StatCard UI; CSV text/csv filename laporan-kinerja-202610.csv ✓; unread-count 5 → setelah read-all 0 ✓.
+- `bunx tsc --noEmit`: 0 error di src/ (hanya pre-existing examples/ & skills/ di luar cakupan). `bun run lint` bersih. dev.log hanya 200; api.log 0 Traceback; :81 → 200.
+- agent-browser session zfo-ub @ :81 (owner): login → Aset → klik BTC Binance → dialog: section "BASIS BIAYA & PNL (FIFO)" terisi = curl ($2,330.71 / $91,000.51 / $19,565.11 sisa 0,215 unit / unrealized live + pct; 5 baris lot) ✓; Ledger → empty state "Belum ada riwayat buy — Basis biaya belum terbentuk…" ✓ (screenshot ub2-pnl-btc-dialog.png, ub2-pnl-empty.png).
+- Portofolio → tab "Laporan Kinerja": 4 StatCard = curl, chart 12 bar emerald/rose, tabel 12 bulan; Select 6 Bulan → kartu/table refetch (6 baris Mei–Okt 26, +1,7%); Ekspor CSV → toast + file ~/Downloads/laporan-kinerja-202610.csv (7 baris = header+6 bulan, ikut periode terpilih) ✓ (ub2-laporan-12b.png, ub2-laporan-6b.png).
+- Dashboard: badge "5 baru" amber → tandai 1 item → "4 baru" → "Tandai semua dibaca" → badge hilang, item opacity-70, backend unread 0 ✓ (ub2-notif-5baru.png, ub2-notif-4baru.png, ub2-notif-alldone.png).
+- Mobile 390×844: dashboard & aset rapi (hamburger nav bekerja), dialog BTC PnL terbaca (ub2-mobile-dash.png, ub2-mobile-aset.png, ub2-mobile-pnl.png). Console: 0 error (hanya warning Radix aria-describedby pre-existing). Theme light.
+- Regresi: Trading tab Paper Trading (Total Equity render) ✓, Pasar (Alert Harga + Alert Baru + Konverter Mata Uang) ✓, Pajak (estimasi + kewajiban) ✓.
+- Cleanup: flag isRead 5 alerts di-reset ke 0 (seed-default, unread=5) via sqlite agar alur unread siap demo utk verifikasi berikutnya.
+
+Stage Summary:
+- 4 UI U-b LIVE di :81 di atas backend v1.4.0 — PnL FIFO per aset, tab Laporan Kinerja (+CSV), alur tandai dibaca, StatCard anti-luber.
+- Keputusan desain: (1) isRead tidak dipercaya dari /dashboard/summary saja — readMap dari /trading/alerts di-merge agar POST read langsung terlihat tanpa menunggu refetch summary; (2) executor: section PnL null, laporan EmptyState, badge & tombol read tak dirender (query retry:false agar 403 tak spam); (3) CSV export selalu kirim periode terpilih (params months) dan nama file pakai stamp bulan lokal; (4) StatCard truncate backward-compatible — nilai ReactNode apa pun tetap jalan (nodeToText utk title).
+- Catatan agent berikutnya: unread saat ini kembali 5 (seed-default); jangan pindahkan fetch PnL ke luar dialog (query per id memakai key ["assets","pnl",id] — dipakai juga utk invalidate); Cell fill recharts memakai hex literal (var() invalid di SVG attr — gotcha tetap berlaku).
+
+---
+Task ID: U-final
+Agent: orchestrator (main) — cron webDevReview ronde #4
+Task: QA rutin + Cost Basis FIFO + Laporan Kinerja Bulanan + Notifikasi Tandai Dibaca + StatCard truncate.
+
+Work Log:
+- QA awal: services 200 semua, 0 traceback, login OK → STABIL → fokus eksekusi rekomendasi ronde #3.
+- [U-a] Backend v1.4.0: GET /assets/{id}/pnl (FIFO dari transaksi — realized/avg cost/cost basis/unrealized/lots; aset tanpa transaksi → avgCost=null), GET /reports/monthly (+CSV mentah; bucket kalender carry-over; inflow/outflow dari transaksi), alerts.isRead (ALTER idempotent) + unread-count/read/read-all — RBAC/panic/audit lengkap; verifikasi manual lot via sqlite cocok (BTC realized $2,330.71); regresi 200 semua.
+- [U-b] (retry setelah timeout infra) Frontend: section "Basis Biaya & PnL (FIFO)" di dialog detail aset; Portofolio → Tabs "Risiko" | "Laporan Kinerja" (4 StatCard + BarChart Δ bulanan + tabel 8 kolom + periode 6/12/18/24 + Ekspor CSV); Dashboard pusat notifikasi badge "N baru" + mark read per item + "Tandai semua dibaca"; kit.tsx StatCard truncate backward-compatible; types.ts +4 type.
+- [U-final] Verifikasi saya (browser segar): tab Laporan Kinerja terisi ($151,777.94 +6,4% / Terbaik Jan 26 / Terburuk Nov 25) ✓; badge "5 baru" → tandai semua → hilang ✓; dialog BTC → PnL FIFO cocok persis dgn backend ✓; 0 console error; lint exit 0; 0 traceback.
+
+Stage Summary:
+- Platform: 11 view + backend v1.4.0. Baru: analitik FIFO per aset end-to-end, Laporan Kinerja Bulanan + CSV, notifikasi manajemen baca. StatCard aman mobile.
+- Keadaan bersih: isRead di-reset (unread=5 demo), tidak ada data uji tersisa, theme light, paper $100k, MFA off.
+- Gotcha: (1) retry agent setelah "context deadline exceeded" WAJIB audit file parsial dulu (attempt-1 sudah selesai coding); (2) fetch PnL tetap keyed per dialog; (3) Cell fill recharts pakai hex literal.
+- Rekomendasi ronde #5: LIFO/avg-cost switch, laporan PDF (skill pdf), watchlist → quick-buy ke paper trading, backup DB terjadwal (cron backend), audit dark-mode view yang belum tersentuh (governance/research/succession), i18n scaffold EN.

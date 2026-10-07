@@ -9,8 +9,10 @@
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { apiFetch, ApiError } from "@/lib/api";
-import { formatPct } from "@/lib/format";
+import { motion } from "framer-motion";
+import { useAppStore } from "@/lib/store";
+import { apiFetch, apiGetBlob, ApiError } from "@/lib/api";
+import { formatPct, formatMonthLabel } from "@/lib/format";
 import {
   StatCard,
   PageHeader,
@@ -24,6 +26,7 @@ import {
 } from "@/components/shared/kit";
 import type {
   AssetClass,
+  MonthlyReport,
   RiskOverview,
   Settings,
   StressScenario,
@@ -34,6 +37,22 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Bar,
   BarChart,
@@ -59,6 +78,10 @@ import {
   Landmark,
   Layers,
   ArrowRight,
+  Download,
+  FileBarChart2,
+  TrendingUp,
+  TrendingDown,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -124,6 +147,358 @@ function driftBadgeClass(absDrift: number): string {
   if (absDrift <= 10)
     return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400";
   return "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400";
+}
+
+// ------------------------------------------------------------
+// Laporan Kinerja (tab) — Task U-b · GET /reports/monthly[.csv]
+// RBAC: executor 403 → EmptyState
+// ------------------------------------------------------------
+
+const REPORT_PERIODS = [6, 12, 18, 24] as const;
+type ReportMonths = (typeof REPORT_PERIODS)[number];
+
+function pnlTextClass(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v) || v === 0) return "";
+  return v > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+}
+
+function monthStamp(d = new Date()): string {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function ReportsPerformancePanel() {
+  const formatCurrency = useFormatCurrency();
+  const user = useAppStore((s) => s.user);
+  const isExecutor = user?.role === "executor";
+
+  const [months, setMonths] = React.useState<ReportMonths>(12);
+
+  const reportQuery = useQuery<MonthlyReport, ApiError>({
+    queryKey: ["reports", "monthly", months],
+    queryFn: () => apiFetch<MonthlyReport>("/reports/monthly", { params: { months } }),
+    enabled: !isExecutor,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  // Ekspor CSV laporan — blob + Bearer (pola apiGetBlob, S-b)
+  const exportCsvM = useMutation({
+    mutationFn: async () => {
+      const blob = await apiGetBlob("/reports/monthly.csv", { months });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `laporan-kinerja-${monthStamp()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return blob.size;
+    },
+    onSuccess: (size) =>
+      toast.success("Laporan CSV berhasil diunduh", {
+        description: `laporan-kinerja-${monthStamp()}.csv · ${(size / 1024).toFixed(1)} KB`,
+      }),
+    onError: (e) =>
+      toast.error("Gagal mengekspor laporan", {
+        description: e instanceof ApiError ? e.message : "Backend belum terjangkau — mencoba lagi",
+      }),
+  });
+
+  const report = reportQuery.data;
+  const summary = report?.summary;
+  const rows = report?.months ?? [];
+
+  const chartData = React.useMemo(
+    () =>
+      rows.map((m) => ({
+        month: m.month,
+        label: formatMonthLabel(m.month),
+        Perubahan: m.changeUsd,
+      })),
+    [rows],
+  );
+
+  // ---------- RBAC: executor → EmptyState ----------
+  if (isExecutor) {
+    return (
+      <EmptyState
+        icon={<ShieldAlert className="h-6 w-6" />}
+        title="Akses terbatas"
+        description="Laporan kinerja tidak tersedia untuk peran executor."
+      />
+    );
+  }
+
+  if (reportQuery.isError) {
+    if (reportQuery.error instanceof ApiError && reportQuery.error.status === 403) {
+      return (
+        <EmptyState
+          icon={<ShieldAlert className="h-6 w-6" />}
+          title="Akses terbatas"
+          description="Laporan kinerja tidak tersedia untuk peran Anda."
+        />
+      );
+    }
+    return (
+      <ErrorBox
+        message={
+          reportQuery.error instanceof ApiError
+            ? reportQuery.error.message
+            : "Backend belum terjangkau — mencoba lagi"
+        }
+        onRetry={() => void reportQuery.refetch()}
+      />
+    );
+  }
+
+  const pending = reportQuery.isPending;
+
+  return (
+    <div className="space-y-6">
+      {/* ================= StatCards ringkasan ================= */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          loading={pending}
+          label={`Perubahan ${months} Bulan`}
+          value={
+            summary ? (
+              <span className={cn(pnlTextClass(summary.totalChangeUsd))}>
+                {formatCurrency(summary.totalChangeUsd)}
+              </span>
+            ) : (
+              "—"
+            )
+          }
+          sub={summary ? `${formatPct(summary.totalChangePct)} dalam ${months} bulan` : undefined}
+          accent={summary && summary.totalChangeUsd < 0 ? "rose" : "default"}
+          icon={<TrendingUp className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={pending}
+          label="Bulan Terbaik"
+          value={
+            summary?.bestMonth ? (
+              <span className="text-emerald-600 dark:text-emerald-400">
+                {formatCurrency(summary.bestMonth.changeUsd)}
+              </span>
+            ) : (
+              "—"
+            )
+          }
+          sub={summary?.bestMonth ? formatMonthLabel(summary.bestMonth.month) : undefined}
+          icon={<TrendingUp className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={pending}
+          label="Bulan Terburuk"
+          value={
+            summary?.worstMonth ? (
+              <span className="text-rose-600 dark:text-rose-400">
+                {formatCurrency(summary.worstMonth.changeUsd)}
+              </span>
+            ) : (
+              "—"
+            )
+          }
+          sub={summary?.worstMonth ? formatMonthLabel(summary.worstMonth.month) : undefined}
+          accent="rose"
+          icon={<TrendingDown className="h-5 w-5" />}
+        />
+        <StatCard
+          loading={pending}
+          label="Rata-rata Bulanan"
+          value={
+            summary ? (
+              <span className={cn(pnlTextClass(summary.avgMonthlyChangeUsd))}>
+                {formatCurrency(summary.avgMonthlyChangeUsd)}
+              </span>
+            ) : (
+              "—"
+            )
+          }
+          sub="rata-rata perubahan per bulan"
+          icon={<TrendingUp className="h-5 w-5" />}
+        />
+      </div>
+
+      {/* ================= Grafik perubahan bulanan ================= */}
+      <SectionCard
+        title="Perubahan Bulanan"
+        description="Gain/loss portofolio per bulan (arus masuk/keluar tidak dihitung sebagai gain)"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={String(months)}
+              onValueChange={(v) => setMonths(Number(v) as ReportMonths)}
+            >
+              <SelectTrigger className="w-[124px]" aria-label="Periode laporan">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REPORT_PERIODS.map((p) => (
+                  <SelectItem key={p} value={String(p)}>
+                    {p} Bulan
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-[36px]"
+              onClick={() => exportCsvM.mutate()}
+              disabled={exportCsvM.isPending || pending}
+            >
+              {exportCsvM.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Download className="h-4 w-4" aria-hidden="true" />
+              )}
+              Ekspor CSV Laporan
+            </Button>
+          </div>
+        }
+      >
+        {pending ? (
+          <Skeleton className="h-[260px] w-full rounded-lg" aria-label="Memuat grafik laporan" />
+        ) : chartData.length === 0 ? (
+          <EmptyState
+            icon={<FileBarChart2 className="h-6 w-6" />}
+            title="Belum ada data bulanan"
+            description="Laporan terbentuk dari snapshot & transaksi bulanan — data belum cukup."
+          />
+        ) : (
+          <div
+            className="h-[260px] w-full"
+            role="img"
+            aria-label="Grafik perubahan portofolio per bulan"
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="rgba(113,113,122,0.18)"
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#71717a", fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={16}
+                />
+                <YAxis
+                  tickFormatter={(v: number) => formatCurrency(v, true)}
+                  tick={{ fill: "#71717a", fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={70}
+                  domain={["auto", "auto"]}
+                />
+                <Tooltip
+                  cursor={{ fill: "rgba(113,113,122,0.08)" }}
+                  contentStyle={{
+                    background: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 12,
+                    fontSize: 12,
+                    color: "var(--popover-foreground)",
+                  }}
+                  labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                  itemStyle={{ color: "var(--popover-foreground)" }}
+                  formatter={(value) => [formatCurrency(Number(value)), "Perubahan"]}
+                />
+                <Bar dataKey="Perubahan" radius={[4, 4, 0, 0]} maxBarSize={30}>
+                  {chartData.map((d) => (
+                    <Cell key={d.month} fill={d.Perubahan >= 0 ? "#10b981" : "#f43f5e"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </SectionCard>
+
+      {/* ================= Tabel rincian bulanan ================= */}
+      <SectionCard
+        title="Rincian Bulanan"
+        description={
+          pending
+            ? "Memuat data…"
+            : `${rows.length} bulan · inflow ${formatCurrency(summary?.totalInflowUsd ?? 0, true)} · outflow ${formatCurrency(summary?.totalOutflowUsd ?? 0, true)}`
+        }
+        contentClassName="px-0 pb-0"
+      >
+        {pending ? (
+          <div className="px-6 pb-6">
+            <LoadingRows rows={6} />
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="px-6 pb-6">
+            <EmptyState
+              icon={<FileBarChart2 className="h-6 w-6" />}
+              title="Tidak ada baris bulanan"
+              description="Belum ada snapshot portofolio untuk periode ini."
+            />
+          </div>
+        ) : (
+          <div className="max-h-80 overflow-auto scrollbar-thin">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="min-w-[84px]">Bulan</TableHead>
+                  <TableHead className="text-right">Awal</TableHead>
+                  <TableHead className="text-right">Akhir</TableHead>
+                  <TableHead className="text-right">Δ ±</TableHead>
+                  <TableHead className="text-right">Inflow</TableHead>
+                  <TableHead className="text-right">Outflow</TableHead>
+                  <TableHead className="text-right">Net Flow</TableHead>
+                  <TableHead className="w-[56px] text-right">Tx</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((m) => (
+                  <TableRow key={m.month}>
+                    <TableCell className="font-medium">{formatMonthLabel(m.month)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {formatCurrency(m.startUsd, true)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(m.endUsd, true)}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right font-medium tabular-nums",
+                        pnlTextClass(m.changeUsd),
+                      )}
+                    >
+                      {formatCurrency(m.changeUsd, true)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-emerald-600/90 dark:text-emerald-400/90">
+                      {formatCurrency(m.inflowUsd, true)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-rose-600/90 dark:text-rose-400/90">
+                      {formatCurrency(m.outflowUsd, true)}
+                    </TableCell>
+                    <TableCell
+                      className={cn("text-right tabular-nums", pnlTextClass(m.netFlowUsd))}
+                    >
+                      {formatCurrency(m.netFlowUsd, true)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {m.txCount}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
 }
 
 // ------------------------------------------------------------
@@ -216,8 +591,29 @@ export default function PortfolioView() {
     <div className="space-y-6">
       <PageHeader
         title="Portofolio & Risiko"
-        subtitle="Alokasi vs target, konsentrasi posisi, VaR, dan stress test."
+        subtitle="Alokasi vs target, konsentrasi posisi, VaR, stress test, dan laporan kinerja bulanan."
       />
+
+      <Tabs defaultValue="risiko" className="gap-6">
+        <TabsList className="h-10 p-1">
+          <TabsTrigger value="risiko" className="px-4">
+            <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+            Risiko
+          </TabsTrigger>
+          <TabsTrigger value="laporan" className="px-4">
+            <FileBarChart2 className="h-4 w-4" aria-hidden="true" />
+            Laporan Kinerja
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ================= Tab 1: Risiko ================= */}
+        <TabsContent value="risiko" className="mt-2 outline-none">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            className="space-y-6"
+          >
 
       {/* ---------- Error banner ---------- */}
       {riskQuery.isError && !risk && errBox(riskQuery)}
@@ -650,6 +1046,20 @@ export default function PortfolioView() {
           </div>
         </div>
       </SectionCard>
+          </motion.div>
+        </TabsContent>
+
+        {/* ================= Tab 2: Laporan Kinerja ================= */}
+        <TabsContent value="laporan" className="mt-2 outline-none">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+          >
+            <ReportsPerformancePanel />
+          </motion.div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

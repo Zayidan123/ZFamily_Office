@@ -1,0 +1,949 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ============================================================
+     4→     4→// View: Aset — Task 2-a
+     5→     5→// StatCard per kelas · toolbar filter (search/class/entity)
+     6→     6→// Tabel aset + dialog detail + dialog tambah/edit (RHF + zod)
+     7→     7→// RBAC: hanya owner bisa tambah/edit/hapus
+     8→     8→// ============================================================
+     9→     9→import * as React from "react";
+    10→    10→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    11→    11→import { useForm, useWatch, Controller } from "react-hook-form";
+    12→    12→import { zodResolver } from "@hookform/resolvers/zod";
+    13→    13→import { z } from "zod";
+    14→    14→import { toast } from "sonner";
+    15→    15→import { useAppStore } from "@/lib/store";
+    16→    16→import { apiFetch, ApiError } from "@/lib/api";
+    17→    17→import { formatUsd, formatIdr, formatPct, formatNumber, formatDateTime } from "@/lib/format";
+    18→    18→import {
+    19→    19→  useFormatCurrency,
+    20→    20→  PageHeader,
+    21→    21→  SectionCard,
+    22→    22→  EmptyState,
+    23→    23→  LoadingRows,
+    24→    24→  ErrorBox,
+    25→    25→  ClassBadge,
+    26→    26→  ASSET_CLASS_STYLE,
+    27→    27→  ConfirmButton,
+    28→    28→} from "@/components/shared/kit";
+    29→    29→import type { Asset, AssetClass, AssetClassRow, Entity } from "@/lib/types";
+    30→    30→import { cn } from "@/lib/utils";
+    31→    31→import { Button } from "@/components/ui/button";
+    32→    32→import { Card } from "@/components/ui/card";
+    33→    33→import { Input } from "@/components/ui/input";
+    34→    34→import { Label } from "@/components/ui/label";
+    35→    35→import { Textarea } from "@/components/ui/textarea";
+    36→    36→import { Skeleton } from "@/components/ui/skeleton";
+    37→    37→import { Badge } from "@/components/ui/badge";
+    38→    38→import {
+    39→    39→  Dialog,
+    40→    40→  DialogContent,
+    41→    41→  DialogDescription,
+    42→    42→  DialogFooter,
+    43→    43→  DialogHeader,
+    44→    44→  DialogTitle,
+    45→    45→} from "@/components/ui/dialog";
+    46→    46→import {
+    47→    47→  Select,
+    48→    48→  SelectContent,
+    49→    49→  SelectItem,
+    50→    50→  SelectTrigger,
+    51→    51→  SelectValue,
+    52→    52→} from "@/components/ui/select";
+    53→    53→import {
+    54→    54→  Table,
+    55→    55→  TableBody,
+    56→    56→  TableCell,
+    57→    57→  TableHead,
+    58→    58→  TableHeader,
+    59→    59→  TableRow,
+    60→    60→} from "@/components/ui/table";
+    61→    61→import {
+    62→    62→  Search,
+    63→    63→  Plus,
+    64→    64→  Pencil,
+    65→    65→  Trash2,
+    66→    66→  Loader2,
+    67→    67→  Wallet,
+    68→    68→  ArrowLeftRight,
+    69→    69→  Briefcase,
+    70→    70→  Landmark,
+    71→    71→  Package,
+    72→    72→  Boxes,
+    73→    73→  Snowflake,
+    74→    74→  ClipboardList,
+    75→    75→  TrendingUp,
+    76→    76→  TrendingDown,
+    77→    77→  type LucideIcon,
+    78→    78→} from "lucide-react";
+    79→    79→
+    80→    80→// ------------------------------------------------------------
+    81→    81→// Tipe & konstanta lokal
+    82→    82→// ------------------------------------------------------------
+    83→    83→type AssetRow = Asset & { change24hPct?: number | null };
+    84→    84→
+    85→    85→const CLASS_OPTIONS = (
+    86→    86→  Object.entries(ASSET_CLASS_STYLE) as [AssetClass, { label: string }][]
+    87→    87→).map(([value, s]) => ({ value, label: s.label }));
+    88→    88→
+    89→    89→const SOURCE_META: Record<string, { label: string; icon: LucideIcon }> = {
+    90→    90→  wallet: { label: "Wallet", icon: Wallet },
+    91→    91→  exchange: { label: "Exchange", icon: ArrowLeftRight },
+    92→    92→  broker: { label: "Broker", icon: Briefcase },
+    93→    93→  bank: { label: "Bank", icon: Landmark },
+    94→    94→  physical: { label: "Fisik", icon: Package },
+    95→    95→  cold_storage: { label: "Cold Storage", icon: Snowflake },
+    96→    96→  manual: { label: "Manual", icon: ClipboardList },
+    97→    97→  other: { label: "Lainnya", icon: Boxes },
+    98→    98→};
+    99→    99→
+   100→   100→function sourceMeta(t: string) {
+   101→   101→  return SOURCE_META[t] ?? { label: t || "Lainnya", icon: Boxes };
+   102→   102→}
+   103→   103→
+   104→   104→/** Jumlah desimal sesuai kelas aset */
+   105→   105→function qtyDigits(c: AssetClass): number {
+   106→   106→  if (c === "property" || c === "vehicle" || c === "business") return 0;
+   107→   107→  if (c === "cash") return 2;
+   108→   108→  return 6;
+   109→   109→}
+   110→   110→
+   111→   111→function formatAssetPrice(unitPrice: number, currency: string): string {
+   112→   112→  return currency === "IDR" ? formatIdr(unitPrice) : formatUsd(unitPrice);
+   113→   113→}
+   114→   114→
+   115→   115→function errMsg(err: unknown): string {
+   116→   116→  return err instanceof ApiError ? err.message : "Backend belum terjangkau — mencoba lagi";
+   117→   117→}
+   118→   118→
+   119→   119→/** Nilai total mengikuti display currency store */
+   120→   120→function CurrencyCell({ usd }: { usd: number }) {
+   121→   121→  const format = useFormatCurrency();
+   122→   122→  return <span className="tabular-nums">{format(usd)}</span>;
+   123→   123→}
+   124→   124→
+   125→   125→// ------------------------------------------------------------
+   126→   126→// Elemen kecil
+   127→   127→// ------------------------------------------------------------
+   128→   128→
+   129→   129→function SourceBadge({ type, label }: { type: string; label?: string | null }) {
+   130→   130→  const meta = sourceMeta(type);
+   131→   131→  const Icon = meta.icon;
+   132→   132→  return (
+   133→   133→    <Badge
+   134→   134→      variant="outline"
+   135→   135→      className="max-w-full gap-1 border-zinc-500/40 bg-zinc-500/5 px-1.5 font-normal text-zinc-600 dark:text-zinc-300"
+   136→   136→    >
+   137→   137→      <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
+   138→   138→      <span className="truncate">{label?.trim() ? label : meta.label}</span>
+   139→   139→    </Badge>
+   140→   140→  );
+   141→   141→}
+   142→   142→
+   143→   143→function DeltaPct({ value, className }: { value: number | null | undefined; className?: string }) {
+   144→   144→  if (value === null || value === undefined || !Number.isFinite(value)) {
+   145→   145→    return <span className={cn("text-xs text-muted-foreground", className)}>—</span>;
+   146→   146→  }
+   147→   147→  const up = value >= 0;
+   148→   148→  return (
+   149→   149→    <span
+   150→   150→      className={cn(
+   151→   151→        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium tabular-nums",
+   152→   152→        up
+   153→   153→          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+   154→   154→          : "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+   155→   155→        className,
+   156→   156→      )}
+   157→   157→    >
+   158→   158→      {up ? <TrendingUp className="h-3 w-3" aria-hidden="true" /> : <TrendingDown className="h-3 w-3" aria-hidden="true" />}
+   159→   159→      {formatPct(value)}
+   160→   160→    </span>
+   161→   161→  );
+   162→   162→}
+   163→   163→
+   164→   164→/** Kartu ringkas per kelas aset (StatCard-style dengan ClassBadge) */
+   165→   165→function ClassStatCard({
+   166→   166→  row,
+   167→   167→  loading,
+   168→   168→  formatCurrency,
+   169→   169→}: {
+   170→   170→  row?: AssetClassRow;
+   171→   171→  loading?: boolean;
+   172→   172→  formatCurrency: (usd: number, compact?: boolean) => string;
+   173→   173→}) {
+   174→   174→  if (loading || !row) {
+   175→   175→    return (
+   176→   176→      <Card className="rounded-xl p-5">
+   177→   177→        <Skeleton className="h-5 w-20" />
+   178→   178→        <Skeleton className="mt-3 h-8 w-28" />
+   179→   179→        <Skeleton className="mt-3 h-4 w-24" />
+   180→   180→      </Card>
+   181→   181→    );
+   182→   182→  }
+   183→   183→  return (
+   184→   184→    <Card className="flex min-h-[118px] flex-col gap-2.5 rounded-xl p-5">
+   185→   185→      <div className="flex items-center justify-between gap-2">
+   186→   186→        <ClassBadge assetClass={row.class} />
+   187→   187→        <DeltaPct value={row.change24hPct} />
+   188→   188→      </div>
+   189→   189→      <div className="text-2xl font-semibold leading-none tabular-nums">
+   190→   190→        <span className="block truncate" title={formatCurrency(row.valueUsd)}>{formatCurrency(row.valueUsd)}</span>
+   191→   191→      </div>
+   192→   192→      <div className="text-xs text-muted-foreground">
+   193→   193→        {row.count} aset · {formatPct(row.pct, false)} portofolio
+   194→   194→      </div>
+   195→   195→    </Card>
+   196→   196→  );
+   197→   197→}
+   198→   198→
+   199→   199→function FieldError({ message }: { message?: string }) {
+   200→   200→  if (!message) return null;
+   201→   201→  return <p className="text-xs font-medium text-rose-600 dark:text-rose-400">{message}</p>;
+   202→   202→}
+   203→   203→
+   204→   204→function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+   205→   205→  return (
+   206→   206→    <div className="flex items-start justify-between gap-6 border-b py-2 last:border-b-0">
+   207→   207→      <span className="shrink-0 text-xs uppercase tracking-wide text-muted-foreground">{label}</span>
+   208→   208→      <span className="min-w-0 break-words text-right text-sm font-medium">{children}</span>
+   209→   209→    </div>
+   210→   210→  );
+   211→   211→}
+   212→   212→
+   213→   213→// ------------------------------------------------------------
+   214→   214→// Skema form aset (string-based; konversi number saat submit)
+   215→   215→// ------------------------------------------------------------
+   216→   216→const assetFormSchema = z.object({
+   217→   217→  name: z.string().min(1, "Nama aset wajib diisi").max(120, "Nama maksimal 120 karakter"),
+   218→   218→  assetClass: z.string().min(1, "Pilih kelas aset"),
+   219→   219→  symbol: z.string().max(24, "Simbol maksimal 24 karakter"),
+   220→   220→  entityId: z.string().min(1, "Pilih entitas pemilik aset"),
+   221→   221→  quantity: z
+   222→   222→    .string()
+   223→   223→    .min(1, "Jumlah wajib diisi")
+   224→   224→    .refine((v) => !Number.isNaN(Number(v)), "Jumlah harus berupa angka")
+   225→   225→    .refine((v) => Number(v) >= 0, "Jumlah tidak boleh negatif"),
+   226→   226→  unitPrice: z
+   227→   227→    .string()
+   228→   228→    .min(1, "Harga satuan wajib diisi")
+   229→   229→    .refine((v) => !Number.isNaN(Number(v)), "Harga harus berupa angka")
+   230→   230→    .refine((v) => Number(v) >= 0, "Harga tidak boleh negatif"),
+   231→   231→  currency: z.enum(["USD", "IDR"]),
+   232→   232→  sourceType: z.string().min(1, "Pilih sumber pencatatan"),
+   233→   233→  sourceLabel: z.string().max(80, "Label sumber maksimal 80 karakter"),
+   234→   234→  notes: z.string().max(1000, "Catatan maksimal 1000 karakter"),
+   235→   235→});
+   236→   236→type AssetFormValues = z.infer<typeof assetFormSchema>;
+   237→   237→
+   238→   238→const EMPTY_ASSET_FORM: AssetFormValues = {
+   239→   239→  name: "",
+   240→   240→  assetClass: "",
+   241→   241→  symbol: "",
+   242→   242→  entityId: "",
+   243→   243→  quantity: "",
+   244→   244→  unitPrice: "",
+   245→   245→  currency: "USD",
+   246→   246→  sourceType: "other",
+   247→   247→  sourceLabel: "",
+   248→   248→  notes: "",
+   249→   249→};
+   250→   250→
+   251→   251→// ------------------------------------------------------------
+   252→   252→// Dialog Tambah/Edit Aset
+   253→   253→// ------------------------------------------------------------
+   254→   254→function AssetFormDialog({
+   255→   255→  open,
+   256→   256→  onOpenChange,
+   257→   257→  asset,
+   258→   258→  entities,
+   259→   259→}: {
+   260→   260→  open: boolean;
+   261→   261→  onOpenChange: (v: boolean) => void;
+   262→   262→  asset: AssetRow | null;
+   263→   263→  entities: Entity[];
+   264→   264→}) {
+   265→   265→  const queryClient = useQueryClient();
+   266→   266→  const form = useForm<AssetFormValues>({
+   267→   267→    resolver: zodResolver(assetFormSchema),
+   268→   268→    defaultValues: EMPTY_ASSET_FORM,
+   269→   269→  });
+   270→   270→  const currency = useWatch({ control: form.control, name: "currency", defaultValue: "USD" });
+   271→   271→
+   272→   272→  React.useEffect(() => {
+   273→   273→    if (!open) return;
+   274→   274→    form.reset(
+   275→   275→      asset
+   276→   276→        ? {
+   277→   277→            name: asset.name,
+   278→   278→            assetClass: asset.assetClass,
+   279→   279→            symbol: asset.symbol ?? "",
+   280→   280→            entityId: String(asset.entityId),
+   281→   281→            quantity: String(asset.quantity),
+   282→   282→            unitPrice: String(asset.unitPrice),
+   283→   283→            currency: asset.currency === "IDR" ? "IDR" : "USD",
+   284→   284→            sourceType: SOURCE_META[asset.sourceType] ? asset.sourceType : "other",
+   285→   285→            sourceLabel: asset.sourceLabel ?? "",
+   286→   286→            notes: asset.notes ?? "",
+   287→   287→          }
+   288→   288→        : EMPTY_ASSET_FORM,
+   289→   289→    );
+   290→   290→  }, [open, asset, form]);
+   291→   291→
+   292→   292→  const saveMutation = useMutation({
+   293→   293→    mutationFn: (values: AssetFormValues) => {
+   294→   294→      const body = {
+   295→   295→        name: values.name.trim(),
+   296→   296→        assetClass: values.assetClass,
+   297→   297→        symbol: values.symbol.trim() ? values.symbol.trim() : null,
+   298→   298→        entityId: Number(values.entityId),
+   299→   299→        quantity: Number(values.quantity),
+   300→   300→        unitPrice: Number(values.unitPrice),
+   301→   301→        currency: values.currency,
+   302→   302→        sourceType: values.sourceType,
+   303→   303→        sourceLabel: values.sourceLabel.trim(),
+   304→   304→        notes: values.notes.trim(),
+   305→   305→      };
+   306→   306→      if (asset) {
+   307→   307→        return apiFetch<AssetRow>(`/assets/${asset.id}`, { method: "PUT", body });
+   308→   308→      }
+   309→   309→      return apiFetch<AssetRow>("/assets", { method: "POST", body });
+   310→   310→    },
+   311→   311→    onSuccess: () => {
+   312→   312→      toast.success(asset ? "Aset berhasil diperbarui" : "Aset berhasil ditambahkan", {
+   313→   313→        description: asset ? asset.name : "Data aset baru tersimpan ke portofolio.",
+   314→   314→      });
+   315→   315→      void queryClient.invalidateQueries({ queryKey: ["assets"] });
+   316→   316→      void queryClient.invalidateQueries({ queryKey: ["assets", "classes"] });
+   317→   317→      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+   318→   318→      onOpenChange(false);
+   319→   319→    },
+   320→   320→    onError: (err) => {
+   321→   321→      toast.error(asset ? "Gagal memperbarui aset" : "Gagal menambahkan aset", {
+   322→   322→        description: errMsg(err),
+   323→   323→      });
+   324→   324→    },
+   325→   325→  });
+   326→   326→
+   327→   327→  const onSubmit = form.handleSubmit((values) => saveMutation.mutate(values));
+   328→   328→
+   329→   329→  return (
+   330→   330→    <Dialog open={open} onOpenChange={onOpenChange}>
+   331→   331→      <DialogContent className="max-h-[90vh] overflow-y-auto scrollbar-thin sm:max-w-xl">
+   332→   332→        <DialogHeader>
+   333→   333→          <DialogTitle>{asset ? "Edit Aset" : "Tambah Aset"}</DialogTitle>
+   334→   334→          <DialogDescription>
+   335→   335→            {asset
+   336→   336→              ? "Perbarui detail aset. Harga pasar live tetap dihitung otomatis oleh engine."
+   337→   337→              : "Catat aset baru ke portofolio keluarga — kripto, saham, properti, dll."}
+   338→   338→          </DialogDescription>
+   339→   339→        </DialogHeader>
+   340→   340→
+   341→   341→        <form onSubmit={onSubmit} className="grid gap-4" noValidate>
+   342→   342→          <div className="grid gap-1.5">
+   343→   343→            <Label htmlFor="asset-name">Nama Aset *</Label>
+   344→   344→            <Input
+   345→   345→              id="asset-name"
+   346→   346→              placeholder="cth. Bitcoin, Rumah Bandung, BBCA"
+   347→   347→              {...form.register("name")}
+   348→   348→            />
+   349→   349→            <FieldError message={form.formState.errors.name?.message} />
+   350→   350→          </div>
+   351→   351→
+   352→   352→          <div className="grid gap-4 sm:grid-cols-2">
+   353→   353→            <div className="grid gap-1.5">
+   354→   354→              <Label>Kelas Aset *</Label>
+   355→   355→              <Controller
+   356→   356→                control={form.control}
+   357→   357→                name="assetClass"
+   358→   358→                render={({ field }) => (
+   359→   359→                  <Select value={field.value} onValueChange={field.onChange}>
+   360→   360→                    <SelectTrigger className="w-full">
+   361→   361→                      <SelectValue placeholder="Pilih kelas" />
+   362→   362→                    </SelectTrigger>
+   363→   363→                    <SelectContent>
+   364→   364→                      {CLASS_OPTIONS.map((c) => (
+   365→   365→                        <SelectItem key={c.value} value={c.value}>
+   366→   366→                          {c.label}
+   367→   367→                        </SelectItem>
+   368→   368→                      ))}
+   369→   369→                    </SelectContent>
+   370→   370→                  </Select>
+   371→   371→                )}
+   372→   372→              />
+   373→   373→              <FieldError message={form.formState.errors.assetClass?.message} />
+   374→   374→            </div>
+   375→   375→
+   376→   376→            <div className="grid gap-1.5">
+   377→   377→              <Label htmlFor="asset-symbol">Simbol / Ticker</Label>
+   378→   378→              <Input id="asset-symbol" placeholder="cth. BTC, BBCA (opsional)" {...form.register("symbol")} />
+   379→   379→              <FieldError message={form.formState.errors.symbol?.message} />
+   380→   380→            </div>
+   381→   381→          </div>
+   382→   382→
+   383→   383→          <div className="grid gap-1.5">
+   384→   384→            <Label>Entitas Pemilik *</Label>
+   385→   385→            <Controller
+   386→   386→              control={form.control}
+   387→   387→              name="entityId"
+   388→   388→              render={({ field }) => (
+   389→   389→                <Select value={field.value} onValueChange={field.onChange}>
+   390→   390→                  <SelectTrigger className="w-full">
+   391→   391→                    <SelectValue placeholder="Pilih entitas" />
+   392→   392→                  </SelectTrigger>
+   393→   393→                  <SelectContent>
+   394→   394→                    {entities.length === 0 ? (
+   395→   395→                      <div className="px-3 py-2 text-sm text-muted-foreground">
+   396→   396→                        Tidak ada entitas tersedia
+   397→   397→                      </div>
+   398→   398→                    ) : (
+   399→   399→                      entities.map((e) => (
+   400→   400→                        <SelectItem key={String(e.id)} value={String(e.id)}>
+   401→   401→                          {e.name}
+   402→   402→                        </SelectItem>
+   403→   403→                      ))
+   404→   404→                    )}
+   405→   405→                  </SelectContent>
+   406→   406→                </Select>
+   407→   407→              )}
+   408→   408→            />
+   409→   409→            <FieldError message={form.formState.errors.entityId?.message} />
+   410→   410→          </div>
+   411→   411→
+   412→   412→          <div className="grid gap-4 sm:grid-cols-2">
+   413→   413→            <div className="grid gap-1.5">
+   414→   414→              <Label htmlFor="asset-quantity">Jumlah *</Label>
+   415→   415→              <Input
+   416→   416→                id="asset-quantity"
+   417→   417→                type="number"
+   418→   418→                step="any"
+   419→   419→                min="0"
+   420→   420→                inputMode="decimal"
+   421→   421→                placeholder="cth. 0.5"
+   422→   422→                {...form.register("quantity")}
+   423→   423→              />
+   424→   424→              <FieldError message={form.formState.errors.quantity?.message} />
+   425→   425→            </div>
+   426→   426→
+   427→   427→            <div className="grid gap-1.5">
+   428→   428→              <div className="flex items-center justify-between gap-2">
+   429→   429→                <Label htmlFor="asset-price">Harga Satuan *</Label>
+   430→   430→                {/* Toggle USD/IDR */}
+   431→   431→                <div className="flex overflow-hidden rounded-lg border" role="group" aria-label="Mata uang harga satuan">
+   432→   432→                  {(["USD", "IDR"] as const).map((c) => (
+   433→   433→                    <button
+   434→   434→                      key={c}
+   435→   435→                      type="button"
+   436→   436→                      onClick={() => form.setValue("currency", c, { shouldValidate: true })}
+   437→   437→                      className={cn(
+   438→   438→                        "px-2.5 py-1 text-xs font-semibold transition-colors",
+   439→   439→                        currency === c
+   440→   440→                          ? "bg-emerald-600 text-white"
+   441→   441→                          : "bg-transparent text-muted-foreground hover:bg-muted",
+   442→   442→                      )}
+   443→   443→                    >
+   444→   444→                      {c}
+   445→   445→                    </button>
+   446→   446→                  ))}
+   447→   447→                </div>
+   448→   448→              </div>
+   449→   449→              <Input
+   450→   450→                id="asset-price"
+   451→   451→                type="number"
+   452→   452→                step="any"
+   453→   453→                min="0"
+   454→   454→                inputMode="decimal"
+   455→   455→                placeholder={currency === "IDR" ? "cth. 1500000" : "cth. 65000"}
+   456→   456→                {...form.register("unitPrice")}
+   457→   457→              />
+   458→   458→              <FieldError message={form.formState.errors.unitPrice?.message} />
+   459→   459→            </div>
+   460→   460→          </div>
+   461→   461→
+   462→   462→          <div className="grid gap-4 sm:grid-cols-2">
+   463→   463→            <div className="grid gap-1.5">
+   464→   464→              <Label>Sumber Pencatatan</Label>
+   465→   465→              <Controller
+   466→   466→                control={form.control}
+   467→   467→                name="sourceType"
+   468→   468→                render={({ field }) => (
+   469→   469→                  <Select value={field.value} onValueChange={field.onChange}>
+   470→   470→                    <SelectTrigger className="w-full">
+   471→   471→                      <SelectValue placeholder="Pilih sumber" />
+   472→   472→                    </SelectTrigger>
+   473→   473→                    <SelectContent>
+   474→   474→                      {["exchange", "wallet", "broker", "bank", "physical", "other"].map((t) => (
+   475→   475→                        <SelectItem key={t} value={t}>
+   476→   476→                          {sourceMeta(t).label}
+   477→   477→                        </SelectItem>
+   478→   478→                      ))}
+   479→   479→                    </SelectContent>
+   480→   480→                  </Select>
+   481→   481→                )}
+   482→   482→              />
+   483→   483→              <FieldError message={form.formState.errors.sourceType?.message} />
+   484→   484→            </div>
+   485→   485→
+   486→   486→            <div className="grid gap-1.5">
+   487→   487→              <Label htmlFor="asset-sourcelabel">Label Sumber</Label>
+   488→   488→              <Input
+   489→   489→                id="asset-sourcelabel"
+   490→   490→                placeholder="cth. Binance, Ledger Nano X (opsional)"
+   491→   491→                {...form.register("sourceLabel")}
+   492→   492→              />
+   493→   493→              <FieldError message={form.formState.errors.sourceLabel?.message} />
+   494→   494→            </div>
+   495→   495→          </div>
+   496→   496→
+   497→   497→          <div className="grid gap-1.5">
+   498→   498→            <Label htmlFor="asset-notes">Catatan</Label>
+   499→   499→            <Textarea
+   500→   500→              id="asset-notes"
+   501→   501→              rows={3}
+   502→   502→              placeholder="Catatan tambahan tentang aset ini (opsional)"
+   503→   503→              {...form.register("notes")}
+   504→   504→            />
+   505→   505→            <FieldError message={form.formState.errors.notes?.message} />
+   506→   506→          </div>
+   507→   507→
+   508→   508→          <DialogFooter className="gap-2 sm:gap-0">
+   509→   509→            <Button
+   510→   510→              type="button"
+   511→   511→              variant="outline"
+   512→   512→              onClick={() => onOpenChange(false)}
+   513→   513→              disabled={saveMutation.isPending}
+   514→   514→            >
+   515→   515→              Batal
+   516→   516→            </Button>
+   517→   517→            <Button
+   518→   518→              type="submit"
+   519→   519→              className="bg-emerald-600 text-white hover:bg-emerald-700"
+   520→   520→              disabled={saveMutation.isPending}
+   521→   521→            >
+   522→   522→              {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+   523→   523→              {asset ? "Simpan Perubahan" : "Tambah Aset"}
+   524→   524→            </Button>
+   525→   525→          </DialogFooter>
+   526→   526→        </form>
+   527→   527→      </DialogContent>
+   528→   528→    </Dialog>
+   529→   529→  );
+   530→   530→}
+   531→   531→
+   532→   532→// ------------------------------------------------------------
+   533→   533→// Dialog Detail Aset
+   534→   534→// ------------------------------------------------------------
+   535→   535→function AssetDetailDialog({
+   536→   536→  asset,
+   537→   537→  onOpenChange,
+   538→   538→}: {
+   539→   539→  asset: AssetRow | null;
+   540→   540→  onOpenChange: (v: boolean) => void;
+   541→   541→}) {
+   542→   542→  return (
+   543→   543→    <Dialog open={!!asset} onOpenChange={onOpenChange}>
+   544→   544→      <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-thin sm:max-w-lg">
+   545→   545→        {asset && (
+   546→   546→          <>
+   547→   547→            <DialogHeader>
+   548→   548→              <DialogTitle className="flex flex-wrap items-center gap-2">
+   549→   549→                <span>{asset.name}</span>
+   550→   550→                {asset.symbol && (
+   551→   551→                  <span className="text-sm font-normal text-muted-foreground">{asset.symbol}</span>
+   552→   552→                )}
+   553→   553→              </DialogTitle>
+   554→   554→              <DialogDescription className="flex items-center gap-2">
+   555→   555→                <ClassBadge assetClass={asset.assetClass} />
+   556→   556→                <SourceBadge type={asset.sourceType} label={asset.sourceLabel} />
+   557→   557→              </DialogDescription>
+   558→   558→            </DialogHeader>
+   559→   559→
+   560→   560→            {/* Nilai konversi USD / IDR berdampingan */}
+   561→   561→            <div className="grid grid-cols-2 gap-3">
+   562→   562→              <div className="rounded-xl border bg-emerald-500/5 p-3">
+   563→   563→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Nilai (USD)</p>
+   564→   564→                <p className="mt-1 text-lg font-semibold tabular-nums">{formatUsd(asset.valueUsd)}</p>
+   565→   565→              </div>
+   566→   566→              <div className="rounded-xl border bg-amber-500/5 p-3">
+   567→   567→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Nilai (IDR)</p>
+   568→   568→                <p className="mt-1 text-lg font-semibold tabular-nums">{formatIdr(asset.valueIdr)}</p>
+   569→   569→              </div>
+   570→   570→            </div>
+   571→   571→
+   572→   572→            <div>
+   573→   573→              <DetailRow label="Entitas">{asset.entityName ?? `#${asset.entityId}`}</DetailRow>
+   574→   574→              <DetailRow label="Jumlah">
+   575→   575→                {formatNumber(asset.quantity, qtyDigits(asset.assetClass))}
+   576→   576→                {asset.symbol ? ` ${asset.symbol}` : ""}
+   577→   577→              </DetailRow>
+   578→   578→              <DetailRow label="Harga Satuan">
+   579→   579→                {formatAssetPrice(asset.unitPrice, asset.currency)}{" "}
+   580→   580→                <span className="text-xs font-normal text-muted-foreground">
+   581→   581→                  ({formatUsd(asset.unitPriceUsd)})
+   582→   582→                </span>
+   583→   583→              </DetailRow>
+   584→   584→              <DetailRow label="Δ 24 Jam">
+   585→   585→                <DeltaPct value={asset.change24hPct} className="ml-auto" />
+   586→   586→              </DetailRow>
+   587→   587→              <DetailRow label="Sumber">
+   588→   588→                <SourceBadge type={asset.sourceType} label={asset.sourceLabel} />
+   589→   589→              </DetailRow>
+   590→   590→              <DetailRow label="Catatan">
+   591→   591→                {asset.notes?.trim() ? asset.notes : <span className="text-muted-foreground">—</span>}
+   592→   592→              </DetailRow>
+   593→   593→              <DetailRow label="Diperbarui">{formatDateTime(asset.updatedAt)}</DetailRow>
+   594→   594→            </div>
+   595→   595→          </>
+   596→   596→        )}
+   597→   597→      </DialogContent>
+   598→   598→    </Dialog>
+   599→   599→  );
+   600→   600→}
+   601→   601→
+   602→   602→// ------------------------------------------------------------
+   603→   603→// AssetsView
+   604→   604→// ------------------------------------------------------------
+   605→   605→export default function AssetsView() {
+   606→   606→  const user = useAppStore((s) => s.user);
+   607→   607→  const isOwner = user?.role === "owner";
+   608→   608→  const formatCurrency = useFormatCurrency();
+   609→   609→  const queryClient = useQueryClient();
+   610→   610→
+   611→   611→  // ---------- filter state ----------
+   612→   612→  const [searchInput, setSearchInput] = React.useState("");
+   613→   613→  const [search, setSearch] = React.useState("");
+   614→   614→  const [classFilter, setClassFilter] = React.useState("all");
+   615→   615→  const [entityFilter, setEntityFilter] = React.useState("all");
+   616→   616→
+   617→   617→  React.useEffect(() => {
+   618→   618→    const t = setTimeout(() => setSearch(searchInput.trim()), 350);
+   619→   619→    return () => clearTimeout(t);
+   620→   620→  }, [searchInput]);
+   621→   621→
+   622→   622→  // ---------- dialog state ----------
+   623→   623→  const [formOpen, setFormOpen] = React.useState(false);
+   624→   624→  const [editing, setEditing] = React.useState<AssetRow | null>(null);
+   625→   625→  const [detail, setDetail] = React.useState<AssetRow | null>(null);
+   626→   626→
+   627→   627→  // ---------- queries ----------
+   628→   628→  const classesQuery = useQuery<AssetClassRow[], ApiError>({
+   629→   629→    queryKey: ["assets", "classes"],
+   630→   630→    queryFn: () => apiFetch<AssetClassRow[]>("/assets/classes"),
+   631→   631→    staleTime: 30_000,
+   632→   632→  });
+   633→   633→
+   634→   634→  const entitiesQuery = useQuery<Entity[], ApiError>({
+   635→   635→    queryKey: ["entities"],
+   636→   636→    queryFn: () => apiFetch<Entity[]>("/entities"),
+   637→   637→    staleTime: 5 * 60_000,
+   638→   638→    retry: false,
+   639→   639→  });
+   640→   640→
+   641→   641→  const listParams = {
+   642→   642→    search: search || undefined,
+   643→   643→    class: classFilter !== "all" ? classFilter : undefined,
+   644→   644→    entityId: entityFilter !== "all" ? Number(entityFilter) : undefined,
+   645→   645→  };
+   646→   646→  const assetsQuery = useQuery<AssetRow[], ApiError>({
+   647→   647→    queryKey: ["assets", listParams],
+   648→   648→    queryFn: () => apiFetch<AssetRow[]>("/assets", { params: listParams }),
+   649→   649→    staleTime: 30_000,
+   650→   650→  });
+   651→   651→
+   652→   652→  const assets = assetsQuery.data ?? [];
+   653→   653→  const classes = classesQuery.data ?? [];
+   654→   654→  const entities = entitiesQuery.data ?? [];
+   655→   655→
+   656→   656→  // ---------- delete mutation ----------
+   657→   657→  const deleteMutation = useMutation({
+   658→   658→    mutationFn: (id: string | number) =>
+   659→   659→      apiFetch<{ id: number; deleted: boolean }>(`/assets/${id}`, { method: "DELETE" }),
+   660→   660→    onSuccess: (_data, id) => {
+   661→   661→      const target = assets.find((a) => String(a.id) === String(id));
+   662→   662→      toast.success("Aset berhasil dihapus", {
+   663→   663→        description: target ? `${target.name} dihapus dari portofolio.` : undefined,
+   664→   664→      });
+   665→   665→      setDetail((d) => (d && String(d.id) === String(id) ? null : d));
+   666→   666→      void queryClient.invalidateQueries({ queryKey: ["assets"] });
+   667→   667→      void queryClient.invalidateQueries({ queryKey: ["assets", "classes"] });
+   668→   668→      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+   669→   669→    },
+   670→   670→    onError: (err) => {
+   671→   671→      toast.error("Gagal menghapus aset", { description: errMsg(err) });
+   672→   672→    },
+   673→   673→  });
+   674→   674→
+   675→   675→  const openAdd = () => {
+   676→   676→    setEditing(null);
+   677→   677→    setFormOpen(true);
+   678→   678→  };
+   679→   679→  const openEdit = (a: AssetRow) => {
+   680→   680→    setEditing(a);
+   681→   681→    setFormOpen(true);
+   682→   682→  };
+   683→   683→
+   684→   684→  const totalValue = classes.reduce((acc, c) => acc + c.valueUsd, 0);
+   685→   685→  const totalAssets = classes.reduce((acc, c) => acc + c.count, 0);
+   686→   686→
+   687→   687→  return (
+   688→   688→    <div className="space-y-6">
+   689→   689→      <PageHeader
+   690→   690→        title="Aset"
+   691→   691→        subtitle="Inventaris multi-aset: kripto, saham, forex/emas, properti, kendaraan, kas, bisnis."
+   692→   692→      />
+   693→   693→
+   694→   694→      {/* ================= StatCard per kelas ================= */}
+   695→   695→      {classesQuery.isPending ? (
+   696→   696→        <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+   697→   697→          {Array.from({ length: 5 }).map((_, i) => (
+   698→   698→            <ClassStatCard key={i} loading formatCurrency={formatCurrency} />
+   699→   699→          ))}
+   700→   700→        </div>
+   701→   701→      ) : classesQuery.isError && classes.length === 0 ? (
+   702→   702→        <ErrorBox
+   703→   703→          message={errMsg(classesQuery.error)}
+   704→   704→          onRetry={() => void classesQuery.refetch()}
+   705→   705→        />
+   706→   706→      ) : classes.length > 0 ? (
+   707→   707→        <>
+   708→   708→          <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+   709→   709→            {classes.slice(0, 5).map((row) => (
+   710→   710→              <ClassStatCard key={row.class} row={row} formatCurrency={formatCurrency} />
+   711→   711→            ))}
+   712→   712→          </div>
+   713→   713→          {classes.length > 5 && (
+   714→   714→            <p className="text-xs text-muted-foreground">
+   715→   715→              Menampilkan 5 kelas teratas dari {classes.length} kelas · total{" "}
+   716→   716→              <span className="font-medium tabular-nums">{formatCurrency(totalValue)}</span> di {totalAssets} aset
+   717→   717→            </p>
+   718→   718→          )}
+   719→   719→        </>
+   720→   720→      ) : null}
+   721→   721→
+   722→   722→      {/* ================= Toolbar ================= */}
+   723→   723→      <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+   724→   724→        <div className="relative min-w-0 flex-1">
+   725→   725→          <Search
+   726→   726→            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+   727→   727→            aria-hidden="true"
+   728→   728→          />
+   729→   729→          <Input
+   730→   730→            value={searchInput}
+   731→   731→            onChange={(e) => setSearchInput(e.target.value)}
+   732→   732→            placeholder="Cari nama, simbol, atau sumber…"
+   733→   733→            className="pl-9"
+   734→   734→            aria-label="Cari aset"
+   735→   735→          />
+   736→   736→        </div>
+   737→   737→
+   738→   738→        <div className="flex flex-wrap items-center gap-3">
+   739→   739→          <Select value={classFilter} onValueChange={setClassFilter}>
+   740→   740→            <SelectTrigger className="w-full sm:w-[170px]" aria-label="Filter kelas aset">
+   741→   741→              <SelectValue placeholder="Semua Kelas" />
+   742→   742→            </SelectTrigger>
+   743→   743→            <SelectContent>
+   744→   744→              <SelectItem value="all">Semua Kelas</SelectItem>
+   745→   745→              {CLASS_OPTIONS.map((c) => (
+   746→   746→                <SelectItem key={c.value} value={c.value}>
+   747→   747→                  {c.label}
+   748→   748→                </SelectItem>
+   749→   749→              ))}
+   750→   750→            </SelectContent>
+   751→   751→          </Select>
+   752→   752→
+   753→   753→          <Select value={entityFilter} onValueChange={setEntityFilter}>
+   754→   754→            <SelectTrigger className="w-full sm:w-[180px]" aria-label="Filter entitas">
+   755→   755→              <SelectValue placeholder="Semua Entitas" />
+   756→   756→            </SelectTrigger>
+   757→   757→            <SelectContent>
+   758→   758→              <SelectItem value="all">Semua Entitas</SelectItem>
+   759→   759→              {entities.map((e) => (
+   760→   760→                <SelectItem key={String(e.id)} value={String(e.id)}>
+   761→   761→                  {e.name}
+   762→   762→                </SelectItem>
+   763→   763→              ))}
+   764→   764→            </SelectContent>
+   765→   765→          </Select>
+   766→   766→
+   767→   767→          {isOwner && (
+   768→   768→            <Button
+   769→   769→              type="button"
+   770→   770→              onClick={openAdd}
+   771→   771→              className="bg-emerald-600 text-white hover:bg-emerald-700"
+   772→   772→            >
+   773→   773→              <Plus className="h-4 w-4" aria-hidden="true" />
+   774→   774→              Tambah Aset
+   775→   775→            </Button>
+   776→   776→          )}
+   777→   777→        </div>
+   778→   778→      </div>
+   779→   779→
+   780→   780→      {/* ================= Tabel Aset ================= */}
+   781→   781→      <SectionCard
+   782→   782→        title="Daftar Aset"
+   783→   783→        description={
+   784→   784→          assetsQuery.isPending
+   785→   785→            ? "Memuat data…"
+   786→   786→            : `${assets.length} aset ditampilkan${search || classFilter !== "all" || entityFilter !== "all" ? " (terfilter)" : ""}`
+   787→   787→        }
+   788→   788→        contentClassName="px-0 pb-0"
+   789→   789→      >
+   790→   790→        {assetsQuery.isError && assets.length === 0 ? (
+   791→   791→          <div className="px-6 pb-6">
+   792→   792→            <ErrorBox message={errMsg(assetsQuery.error)} onRetry={() => void assetsQuery.refetch()} />
+   793→   793→          </div>
+   794→   794→        ) : assetsQuery.isPending && assets.length === 0 ? (
+   795→   795→          <div className="px-6 pb-6">
+   796→   796→            <LoadingRows rows={6} />
+   797→   797→          </div>
+   798→   798→        ) : !assetsQuery.isPending && assets.length === 0 ? (
+   799→   799→          <div className="px-6 pb-6">
+   800→   800→            <EmptyState
+   801→   801→              icon={<Wallet className="h-6 w-6" />}
+   802→   802→              title="Belum ada aset"
+   803→   803→              description={
+   804→   804→                search || classFilter !== "all" || entityFilter !== "all"
+   805→   805→                  ? "Tidak ada aset yang cocok dengan filter. Coba ubah kriteria pencarian."
+   806→   806→                  : isOwner
+   807→   807→                    ? "Mulai catat aset pertama keluarga — kripto, saham, properti, dan lainnya."
+   808→   808→                    : "Owner belum mencatat aset. Data akan tampil di sini."
+   809→   809→              }
+   810→   810→              action={
+   811→   811→                isOwner && !search && classFilter === "all" && entityFilter === "all" ? (
+   812→   812→                  <Button
+   813→   813→                    type="button"
+   814→   814→                    onClick={openAdd}
+   815→   815→                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+   816→   816→                  >
+   817→   817→                    <Plus className="h-4 w-4" aria-hidden="true" />
+   818→   818→                    Tambah Aset
+   819→   819→                  </Button>
+   820→   820→                ) : undefined
+   821→   821→              }
+   822→   822→            />
+   823→   823→          </div>
+   824→   824→        ) : (
+   825→   825→          <div className="max-h-[560px] overflow-auto scrollbar-thin">
+   826→   826→            <Table>
+   827→   827→              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_var(--border)]">
+   828→   828→                <TableRow className="hover:bg-transparent">
+   829→   829→                  <TableHead className="min-w-[220px]">Aset</TableHead>
+   830→   830→                  <TableHead className="w-[110px]">Kelas</TableHead>
+   831→   831→                  <TableHead className="min-w-[130px]">Entitas</TableHead>
+   832→   832→                  <TableHead className="w-[130px] text-right">Jumlah</TableHead>
+   833→   833→                  <TableHead className="w-[130px] text-right">Harga Satuan</TableHead>
+   834→   834→                  <TableHead className="w-[150px] text-right">Nilai Total</TableHead>
+   835→   835→                  <TableHead className="w-[100px] text-right">Δ 24 Jam</TableHead>
+   836→   836→                  <TableHead className="w-[90px] text-right">Aksi</TableHead>
+   837→   837→                </TableRow>
+   838→   838→              </TableHeader>
+   839→   839→              <TableBody>
+   840→   840→                {assets.map((a) => (
+   841→   841→                  <TableRow
+   842→   842→                    key={String(a.id)}
+   843→   843→                    className="cursor-pointer"
+   844→   844→                    title="Lihat detail aset"
+   845→   845→                    onClick={() => setDetail(a)}
+   846→   846→                    onKeyDown={(e) => {
+   847→   847→                      if (e.key === "Enter" || e.key === " ") {
+   848→   848→                        e.preventDefault();
+   849→   849→                        setDetail(a);
+   850→   850→                      }
+   851→   851→                    }}
+   852→   852→                    tabIndex={0}
+   853→   853→                  >
+   854→   854→                    <TableCell>
+   855→   855→                      <div className="flex flex-col gap-1">
+   856→   856→                        <span className="font-medium leading-tight">
+   857→   857→                          {a.name}
+   858→   858→                          {a.symbol && (
+   859→   859→                            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+   860→   860→                              {a.symbol}
+   861→   861→                            </span>
+   862→   862→                          )}
+   863→   863→                        </span>
+   864→   864→                        <SourceBadge type={a.sourceType} label={a.sourceLabel} />
+   865→   865→                      </div>
+   866→   866→                    </TableCell>
+   867→   867→                    <TableCell>
+   868→   868→                      <ClassBadge assetClass={a.assetClass} />
+   869→   869→                    </TableCell>
+   870→   870→                    <TableCell className="text-sm text-muted-foreground">
+   871→   871→                      {a.entityName ?? "—"}
+   872→   872→                    </TableCell>
+   873→   873→                    <TableCell className="text-right tabular-nums">
+   874→   874→                      {formatNumber(a.quantity, qtyDigits(a.assetClass))}
+   875→   875→                      {a.symbol ? <span className="text-muted-foreground"> {a.symbol}</span> : null}
+   876→   876→                    </TableCell>
+   877→   877→                    <TableCell className="text-right tabular-nums">
+   878→   878→                      {formatAssetPrice(a.unitPrice, a.currency)}
+   879→   879→                    </TableCell>
+   880→   880→                    <TableCell className="text-right font-semibold">
+   881→   881→                      <CurrencyCell usd={a.valueUsd} />
+   882→   882→                    </TableCell>
+   883→   883→                    <TableCell className="text-right">
+   884→   884→                      <DeltaPct value={a.change24hPct} className="ml-auto" />
+   885→   885→                    </TableCell>
+   886→   886→                    <TableCell
+   887→   887→                      className="text-right"
+   888→   888→                      onClick={(e) => e.stopPropagation()}
+   889→   889→                      onKeyDown={(e) => e.stopPropagation()}
+   890→   890→                    >
+   891→   891→                      {isOwner ? (
+   892→   892→                        <div className="flex items-center justify-end gap-0.5">
+   893→   893→                          <Button
+   894→   894→                            type="button"
+   895→   895→                            variant="ghost"
+   896→   896→                            size="icon"
+   897→   897→                            className="h-8 w-8"
+   898→   898→                            title="Edit aset"
+   899→   899→                            aria-label={`Edit ${a.name}`}
+   900→   900→                            onClick={() => openEdit(a)}
+   901→   901→                          >
+   902→   902→                            <Pencil className="h-4 w-4" aria-hidden="true" />
+   903→   903→                          </Button>
+   904→   904→                          <ConfirmButton
+   905→   905→                            variant="ghost"
+   906→   906→                            size="sm"
+   907→   907→                            className="h-8 px-2 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400"
+   908→   908→                            title="Hapus aset (klik 2x untuk konfirmasi)"
+   909→   909→                            confirmLabel="Yakin?"
+   910→   910→                            onConfirm={() => deleteMutation.mutate(a.id)}
+   911→   911→                          >
+   912→   912→                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+   913→   913→                          </ConfirmButton>
+   914→   914→                        </div>
+   915→   915→                      ) : (
+   916→   916→                        <span className="text-muted-foreground">—</span>
+   917→   917→                      )}
+   918→   918→                    </TableCell>
+   919→   919→                  </TableRow>
+   920→   920→                ))}
+   921→   921→              </TableBody>
+   922→   922→            </Table>
+   923→   923→          </div>
+   924→   924→        )}
+   925→   925→      </SectionCard>
+   926→   926→
+   927→   927→      {isOwner && !assetsQuery.isPending && assets.length > 0 && (
+   928→   928→        <p className="text-xs text-muted-foreground">
+   929→   929→          Klik baris untuk melihat detail lengkap aset. Perubahan harga pasar live dihitung otomatis dari engine harga.
+   930→   930→        </p>
+   931→   931→      )}
+   932→   932→
+   933→   933→      {/* ================= Dialogs ================= */}
+   934→   934→      <AssetFormDialog
+   935→   935→        open={formOpen}
+   936→   936→        onOpenChange={setFormOpen}
+   937→   937→        asset={editing}
+   938→   938→        entities={entities}
+   939→   939→      />
+   940→   940→      <AssetDetailDialog
+   941→   941→        asset={detail}
+   942→   942→        onOpenChange={(v) => {
+   943→   943→          if (!v) setDetail(null);
+   944→   944→        }}
+   945→   945→      />
+   946→   946→    </div>
+   947→   947→  );
+   948→   948→}
+   949→   949→

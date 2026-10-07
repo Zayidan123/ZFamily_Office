@@ -131,14 +131,65 @@ def performance(user: dict = Depends(require_auth(*READ_ROLES))):
 
 @router.get("/trading/alerts")
 def trading_alerts(limit: int = Query(30, ge=1, le=200), user: dict = Depends(require_auth(*READ_ROLES))):
+    """Daftar notifikasi trading + status baca (isRead, Task U-a).
+
+    Field existing TIDAK diubah (backward-compatible utk dashboard/view Pasar);
+    isRead 0/1 dari DB dipetakan ke boolean JSON.
+    """
     conn = get_conn()
     try:
-        rows = query(conn, "SELECT id, source, level, message, created_at FROM alerts "
+        rows = query(conn, "SELECT id, source, level, message, created_at, isRead FROM alerts "
                            "WHERE kind = 'trading' ORDER BY created_at DESC LIMIT ?", (limit,))
         return ok([
             {"id": r["id"], "source": r["source"], "level": r["level"],
-             "message": r["message"], "createdAt": r["created_at"]}
+             "message": r["message"], "createdAt": r["created_at"],
+             "isRead": bool(r["isRead"])}
             for r in rows
         ])
+    finally:
+        conn.close()
+
+
+@router.get("/trading/alerts/unread-count")
+def trading_alerts_unread_count(user: dict = Depends(require_auth(*READ_ROLES))):
+    """Jumlah notifikasi trading yang belum dibaca (isRead = 0)."""
+    conn = get_conn()
+    try:
+        row = query_one(conn, "SELECT COUNT(*) AS c FROM alerts WHERE kind = 'trading' AND isRead = 0")
+        return ok({"unread": int(row["c"] if row else 0)})
+    finally:
+        conn.close()
+
+
+@router.post("/trading/alerts/read-all")
+def trading_alerts_read_all(user: dict = Depends(require_auth(*READ_ROLES))):
+    """Tandai SEMUA notifikasi trading sudah dibaca (idempotent)."""
+    conn = get_conn()
+    try:
+        guard_mutation(conn)
+        row = query_one(conn, "SELECT COUNT(*) AS c FROM alerts WHERE kind = 'trading' AND isRead = 0")
+        unread = int(row["c"] if row else 0)
+        if unread:
+            execute(conn, "UPDATE alerts SET isRead = 1 WHERE kind = 'trading'")
+        write_audit(conn, user, "alert.read_all", "alert",
+                    f"Tandai semua alert trading dibaca ({unread} item)")
+        return ok({"updated": unread})
+    finally:
+        conn.close()
+
+
+@router.post("/trading/alerts/{alert_id}/read")
+def trading_alert_read(alert_id: int, user: dict = Depends(require_auth(*READ_ROLES))):
+    """Tandai satu notifikasi trading sudah dibaca (idempotent)."""
+    conn = get_conn()
+    try:
+        guard_mutation(conn)
+        row = query_one(conn, "SELECT id, message FROM alerts WHERE id = ? AND kind = 'trading'", (alert_id,))
+        if not row:
+            raise ApiError(404, "Alert tidak ditemukan")
+        execute(conn, "UPDATE alerts SET isRead = 1 WHERE id = ?", (alert_id,))
+        write_audit(conn, user, "alert.read", "alert",
+                    f"Tandai dibaca alert #{alert_id}: {(row['message'] or '')[:60]}")
+        return ok({"id": alert_id, "isRead": True})
     finally:
         conn.close()

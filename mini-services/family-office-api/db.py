@@ -348,6 +348,9 @@ CREATE INDEX IF NOT EXISTS idx_price_alerts_status ON price_alerts(status);
 # Kolom MFA (PRD #42) — ditambahkan via ALTER TABLE agar aman untuk DB existing.
 MFA_COLUMNS = (("mfaSecret", "TEXT"), ("mfaEnabled", "INTEGER NOT NULL DEFAULT 0"))
 
+# Kolom status baca notifikasi (Task U-a) — idempotent via ALTER TABLE.
+ALERT_READ_COLUMNS = (("isRead", "INTEGER NOT NULL DEFAULT 0"),)
+
 
 def _migrate_users_mfa(conn: sqlite3.Connection) -> None:
     """Tambah kolom mfaSecret/mfaEnabled ke users bila belum ada (idempotent)."""
@@ -357,10 +360,19 @@ def _migrate_users_mfa(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
 
 
+def _migrate_alerts_read(conn: sqlite3.Connection) -> None:
+    """Tambah kolom isRead ke alerts bila belum ada (idempotent)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    for name, decl in ALERT_READ_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE alerts ADD COLUMN {name} {decl}")
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     """Jalankan DDL lengkap (idempotent) + migrasi ringan + seed paper_state."""
     conn.executescript(DDL)
     _migrate_users_mfa(conn)
+    _migrate_alerts_read(conn)
     # Paper trading sandbox: state awal $100.000 cash, PnL riil 0 (sekali saja).
     if not query_one(conn, "SELECT id FROM paper_state WHERE id = 1"):
         execute(conn, "INSERT INTO paper_state(id, cashUsd, realizedPnlUsd) VALUES(1, 100000, 0)")
