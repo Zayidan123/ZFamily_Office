@@ -1,0 +1,10 @@
+{
+  "name": "family-office-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FastAPI backend Family Office (Mr.Z) — SQLite, port 8001",
+  "scripts": {
+    "dev": "python3 main.py",
+    "start": "python3 main.py"
+  }
+}
