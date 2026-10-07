@@ -27,6 +27,9 @@ ALLOWED_TARGET_KEYS = {"crypto", "stocks", "forexGold", "property", "cash"}
 BACKUP_DIR = "/home/z/my-project/db/backups"
 BACKUP_MAX_KEEP = 20
 _BACKUP_NAME_RE = re.compile(r"^family_office-\d{8}-\d{6}\.db$")
+# Ronde 8: auto-backup harian — interval + lock (scheduler thread).
+_BACKUP_INTERVAL_HOURS = 24
+_AUTO_BACKUP_LOCK = threading.Lock()
 
 # Rate-limit MFA: max percobaan verify GAGAL per challengeToken (in-memory).
 _MFA_FAILS: dict = {}
@@ -260,7 +263,13 @@ def _prune_backups() -> int:
 @router.get("/system/backups")
 def list_backups(user: dict = Depends(require_auth("owner"))):
     """Daftar backup database (owner-only, read-only — tanpa panic guard)."""
-    return ok({"backups": _backup_list(), "maxKeep": BACKUP_MAX_KEEP})
+    backups = _backup_list()
+    return ok({
+        "backups": backups,
+        "maxKeep": BACKUP_MAX_KEEP,
+        "lastBackupAt": backups[0]["createdAt"] if backups else None,
+        "autoIntervalHours": _BACKUP_INTERVAL_HOURS,
+    })
 
 
 @router.post("/system/backup")
@@ -309,6 +318,66 @@ def download_backup(name: str, user: dict = Depends(require_auth("owner"))):
     finally:
         conn.close()
     return FileResponse(path, media_type="application/octet-stream", filename=name)
+
+
+# --------------------------------------------------- Auto-backup harian (ronde 8)
+
+def _auto_backup_if_due() -> bool:
+    """Buat backup otomatis jika backup terbaru lebih tua dari interval.
+
+    Dipanggil scheduler thread (bukan request) — audit ditulis sbg user sistem.
+    Return True jika backup dibuat.
+    """
+    with _AUTO_BACKUP_LOCK:
+        backups = _backup_list()
+        if backups:
+            newest = datetime.strptime(
+                backups[0]["createdAt"], "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - newest).total_seconds() / 3600.0
+            if age_hours < _BACKUP_INTERVAL_HOURS:
+                return False
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        name = f"family_office-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.db"
+        dest = os.path.join(BACKUP_DIR, name)
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        _prune_backups()
+        try:
+            conn = get_conn()
+            try:
+                write_audit(conn, None, "system.backup_auto", "system",
+                            f"Backup otomatis harian: {name} ({os.path.getsize(dest)} bytes)")
+            finally:
+                conn.close()
+        except Exception:   # audit gagal tidak boleh membatalkan backup
+            pass
+        return True
+
+
+def _backup_scheduler_loop():
+    """Loop latar belakang: cek 60 dtk setelah boot, lalu tiap 30 menit."""
+    import time
+    time.sleep(60)
+    while True:
+        try:
+            if _auto_backup_if_due():
+                print("[family-office-api] Auto-backup harian dibuat")
+        except Exception as exc:   # pragma: no cover — scheduler tak boleh mati
+            print(f"[family-office-api] Auto-backup gagal: {exc}")
+        time.sleep(1800)
+
+
+def start_backup_scheduler():
+    """Mulai daemon thread auto-backup — dipanggil dari lifespan main.py."""
+    t = threading.Thread(target=_backup_scheduler_loop, daemon=True, name="backup-scheduler")
+    t.start()
 
 
 @router.post("/system/panic")

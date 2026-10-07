@@ -322,6 +322,10 @@ export interface SystemBackup {
 export interface SystemBackupList {
   backups: SystemBackup[];
   maxKeep: number;
+  /** createdAt backup terbaru (ronde 8) — null jika belum ada */
+  lastBackupAt?: string | null;
+  /** interval auto-backup harian backend (ronde 8) — jam */
+  autoIntervalHours?: number;
 }
 
 export interface SystemBackupCreated {

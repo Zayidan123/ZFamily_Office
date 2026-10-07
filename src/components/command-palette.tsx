@@ -21,6 +21,7 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
+  CommandShortcut,
 } from "@/components/ui/command";
 import { Moon, Sun, LogOut, Zap, Plus, FileText, DatabaseBackup } from "lucide-react";
 
@@ -37,6 +38,21 @@ export default function CommandPalette({
   const isOwner = user?.role === "owner";
   const { theme, setTheme } = useTheme();
   const isDark = theme === "dark";
+
+  // Hint shortcut G+<key> per view (konsisten dgn GO_SHORTCUTS di app-shell)
+  const VIEW_G_KEY: Partial<Record<ViewKey, string>> = {
+    dashboard: "G D",
+    assets: "G A",
+    transactions: "G T",
+    portfolio: "G P",
+    trading: "G R",
+    market: "G M",
+    governance: "G G",
+    tax: "G X",
+    research: "G I",
+    succession: "G S",
+    settings: "G ,",
+  };
 
   // Cmd+K / Ctrl+K — toggle palette (listener global, hanya saat ter-mount = sudah login)
   React.useEffect(() => {
@@ -92,6 +108,9 @@ export default function CommandPalette({
               >
                 <Icon aria-hidden="true" />
                 <span>{item.label}</span>
+                <CommandShortcut className="font-mono text-[10px] tracking-wide">
+                  {VIEW_G_KEY[item.key]}
+                </CommandShortcut>
               </CommandItem>
             );
           })}
@@ -177,6 +196,23 @@ export default function CommandPalette({
           </CommandItem>
         </CommandGroup>
       </CommandList>
+
+      {/* Footer hint shortcut (ronde 8) — dekoratif, disembunyikan dari SR */}
+      <div
+        className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-4 py-2 text-[11px] text-muted-foreground"
+        aria-hidden="true"
+      >
+        <span className="flex items-center gap-1">
+          <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">G</kbd>
+          lalu
+          <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">D/A/T/M…</kbd>
+          lompat view
+        </span>
+        <span className="flex items-center gap-1">
+          <kbd className="rounded border bg-muted px-1 font-mono text-[10px] font-semibold">?</kbd>
+          buka palette
+        </span>
+      </div>
     </CommandDialog>
   );
 }

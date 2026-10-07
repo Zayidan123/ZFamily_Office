@@ -796,8 +796,33 @@ function AuditTab() {
           description="Coba ubah filter action atau pilih pengguna lain."
         />
       ) : (
-        <div className="scrollbar-thin max-h-96 overflow-y-auto rounded-xl border">
-          <table className="w-full text-sm">
+        <>
+          {/* ---------- Kartu mobile (<md) — tabel 5 kolom terpotong di 390px ---------- */}
+          <div className="scrollbar-thin max-h-96 space-y-2 overflow-y-auto md:hidden">
+            {rows.map((r) => (
+              <div key={r.id} className="rounded-xl border bg-card p-3">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {r.action}
+                  </Badge>
+                  <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                    {formatDateTime(r.createdAt)}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <span className="text-xs font-medium">{r.userName}</span>
+                  <RoleBadge role={r.role} className="px-1.5 text-[10px]" />
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {r.detail ?? "—"}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* ---------- Tabel (≥md) ---------- */}
+          <div className="scrollbar-thin hidden max-h-96 overflow-y-auto rounded-xl border md:block">
+            <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
               <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-2.5 font-medium">Waktu</th>
@@ -832,7 +857,8 @@ function AuditTab() {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground/70">

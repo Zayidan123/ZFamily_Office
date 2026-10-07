@@ -883,6 +883,17 @@ export default function SettingsView() {
                   Snapshot konsisten SQLite — maksimal {backupsQ.data?.maxKeep ?? 20} backup
                   terakhir disimpan di server (backup lama dipangkas otomatis).
                 </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-700 dark:text-emerald-400">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" aria-hidden="true" />
+                    Auto-backup harian aktif
+                  </span>
+                  {backupsQ.data?.lastBackupAt && (
+                    <span className="text-muted-foreground">
+                      Backup terakhir {formatDateTime(backupsQ.data.lastBackupAt)}
+                    </span>
+                  )}
+                </div>
               </div>
               <Button
                 type="button"

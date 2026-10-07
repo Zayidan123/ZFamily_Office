@@ -747,3 +747,29 @@ Stage Summary:
 - Keadaan bersih: theme light, owner login, paper $99,997.93 / 0 posisi, MFA off, panic OFF, 2 file backup tersimpan di db/backups (sengaja dibiarkan sebagai contoh data — max 20, prune otomatis), audit +3 entri backup (append-only).
 - Snapshot bukti: agent-shots/r7-1..r7-5 (PnL FIFO/LIFO/Average dialog, backup card + toast, mobile tx cards).
 - Rekomendasi ronde #8: i18n scaffold EN, notifikasi email/telegram (mock), backup terjadwal (cron harian di backend + indikator "backup terakhir"), tabel→kartu utk Governance/Audit & Transaksi modal, laporan pajak tahunan PDF, sparkline di kartu mobile transaksi, shortcut keyboard palette (G+D dst).
+
+---
+Task ID: VIII
+Agent: orchestrator (main) — cron webDevReview ronde #8
+Task: QA rutin + (1) Auto-backup harian terjadwal + indikator, (2) Shortcut keyboard global G+<key> & ?, (3) Kartu mobile Audit Log, (4) fix RoleBadge role "system".
+
+Work Log:
+- QA awal: Next:3000 / API v1.6.0:8001 / Gateway:81 semua 200; login owner + sweep 11 view 0 console error → STABIL. Temuan QA: tabel Audit Log 836px di viewport 390px (kolom Aksi/Entity/Detail terpotong) → jadi task V-c. Catatan: halaman blank sesaat saat open pertama (compile render lambat ~6 dtk) — reload menyelesaikan, bukan bug app.
+- [V-a] Auto-backup harian (lanjutan fitur ronde 7):
+  - Backend auth_system.py: `_auto_backup_if_due()` — cek umur backup terbaru (mtime → createdAt list); jika ≥ _BACKUP_INTERVAL_HOURS (24 jam) buat snapshot sqlite backup API + prune + audit "system.backup_auto" (user=None → role sistem); `_backup_scheduler_loop()` daemon thread (sleep 60 dtk setelah boot, lalu cek tiap 30 menit, try/except agar scheduler tak pernah mati); `start_backup_scheduler()` dipanggil dari lifespan main.py (setelah seed).
+  - GET /system/backups kini mengembalikan +lastBackupAt (createdAt terbaru, null jika kosong) +autoIntervalHours.
+  - PROOF auto path: force-fire dgn override interval=0 → file family_office-20261007-221143.db dibuat, API lastBackupAt terupdate (3 backup), audit backup_auto 1 entri (user "system"). Scheduler boot-check benar: TIDAK membuat backup saat masih segar (<24 jam) — folder tetap 2 file setelah 60 dtk.
+  - Frontend settings-view: badge emerald "Auto-backup harian aktif" (dot pulse) + "Backup terakhir {formatDateTime(lastBackupAt)}" di kartu backup. types.ts SystemBackupList +lastBackupAt/autoIntervalHours.
+- [V-b] Shortcut keyboard global (app-shell.tsx):
+  - Peta GO_SHORTCUTS (mnemonic Indonesia): G+D Dashboard, G+A Aset, G+T Transaksi, G+P Portofolio, G+R Trading, G+M Pasar, G+G Governance, G+X Pajak, G+I Riset, G+S Suksesi, G+, Pengaturan; "?" buka command palette. Implementasi: keydown listener window (abaikan saat target input/textarea/select/contentEditable atau dgn modifier; pending-g window 1200ms via ref; preventDefault + fokus main setelah lompat).
+  - Command palette: setiap item navigasi kini menampilkan <CommandShortcut> "G D"/"G A"/… (font-mono 10px) + footer hint "G lalu D/A/T/M… lompat view · ? buka palette" (aria-hidden). E2E: G+M → Pasar ✓, G+X → Pajak ✓, G+, → Pengaturan ✓, ? → palette terbuka ✓.
+- [V-c] Kartu mobile Audit Log (governance-view.tsx AuditTab): tabel dibungkus `hidden md:block`; daftar kartu `md:hidden` — badge action mono + waktu, nama + RoleBadge, detail line-clamp-2. Mobile 390px: 200 kartu, overflow 0; desktop: tabel 200 baris tetap tampil.
+- [Fix] RoleBadge (kit.tsx): role "system" (entri audit auto-backup) jatuh ke fallback ROLE_STYLE.executor sehingga tampil "Executor" — menyesatkan. Kini role "system" → badge netral zinc "Sistem". Terverifikasi di kartu audit: "system.backup_auto … system [Sistem]".
+- Verifikasi: bun run lint exit 0; tsc src/ 0 error; console 0 error; regresi 17 endpoint 200 semua; scheduler thread hidup; keadaan bersih (owner login, theme light, 3 file backup di db/backups — 1 di antaranya buah proof auto-backup, dibiarkan sebagai contoh).
+- Gotcha ronde 8: (1) `document.querySelector('aside')` match juga di login page (panel brand) — sudah dicatat ronde 7, tetap berlaku; (2) HMR edit kit.tsx me-remount view → state tab governance kembali ke default — verifikasi pasca-edit harus buka ulang tab; (3) teks card audit memakai TITIK (system.backup_auto) bukan underscore — jangan salah string saat querySelector-by-text.
+
+Stage Summary:
+- Platform v1.6.0: BARU (1) Auto-backup harian (daemon scheduler + lastBackupAt + badge UI), (2) Shortcut keyboard G+<key> utk 11 view + ? palette (dengan hint di palette), (3) Kartu mobile Audit Log, (4) FIX RoleBadge "system" → "Sistem".
+- Keadaan bersih: theme light, owner login, paper $99,997.93 / 0 posisi, MFA off, panic OFF, 3 backup tersimpan (max 20 auto-prune), audit append-only utuh.
+- Snapshot bukti: agent-shots/r8-1 (palette + shortcut hints), r8-2 (badge auto-backup + lastBackup), r8-3 (kartu audit mobile).
+- Rekomendasi ronde #9: i18n scaffold EN, notifikasi email/telegram (mock), laporan pajak tahunan (PDF), tabel→kartu Governance tab lain (Pengguna/Persetujuan) + Transaksi dialog, sparkline harga di Pasar & kartu mobile transaksi, halaman "Bantuan shortcut" (modal daftar G+key), indikator shortcut di tooltip sidebar rail.

@@ -34,6 +34,8 @@ async def lifespan(_app: FastAPI):
             print("[family-office-api] Seed price alerts dibuat (4 alert, 1 terpicu)")
     finally:
         conn.close()
+    # ronde 8: auto-backup harian (daemon thread — cek 60 dtk setelah boot)
+    auth_system.start_backup_scheduler()
     yield
 
 

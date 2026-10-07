@@ -604,7 +604,16 @@ const ROLE_STYLE: Record<Role, { label: string; className: string }> = {
 };
 
 export function RoleBadge({ role, className }: { role: Role; className?: string }) {
-  const s = ROLE_STYLE[role] ?? ROLE_STYLE.executor;
+  // Ronde 8 fix: audit entries sistem memakai role "system" — jangan jatuh ke
+  // gaya executor yang menyesatkan; tampilkan badge netral "Sistem".
+  const s =
+    ROLE_STYLE[role] ??
+    (role === "system"
+      ? {
+          label: "Sistem",
+          className: "border-zinc-500/40 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300",
+        }
+      : ROLE_STYLE.executor);
   return (
     <Badge variant="outline" className={cn(s.className, className)}>
       {s.label}

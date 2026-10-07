@@ -237,6 +237,23 @@ function SidebarContent({
 }
 
 // ------------------------------------------------------------
+// Peta shortcut G+<key> (ronde 8) — mnemonic label Indonesia
+// ------------------------------------------------------------
+const GO_SHORTCUTS: Record<string, { view: ViewKey; label: string }> = {
+  d: { view: "dashboard", label: "Dashboard" },
+  a: { view: "assets", label: "Aset" },
+  t: { view: "transactions", label: "Transaksi" },
+  p: { view: "portfolio", label: "Portofolio" },
+  r: { view: "trading", label: "Trading (tRading)" },
+  m: { view: "market", label: "Pasar (Market)" },
+  g: { view: "governance", label: "Governance" },
+  x: { view: "tax", label: "Pajak (taX)" },
+  i: { view: "research", label: "Riset (rIset)" },
+  s: { view: "succession", label: "Suksesi" },
+  ",": { view: "settings", label: "Pengaturan" },
+};
+
+// ------------------------------------------------------------
 // AppShell
 // ------------------------------------------------------------
 export default function AppShell() {
@@ -253,6 +270,37 @@ export default function AppShell() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
+
+  // ---------- Shortcut keyboard global (ronde 8): G+<key> lompat view, ? buka palette ----------
+  const pendingGRef = React.useRef(0);
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
+      if (e.key === "?") {
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+      if (e.key.toLowerCase() === "g") {
+        pendingGRef.current = Date.now();
+        return;
+      }
+      if (Date.now() - pendingGRef.current < 1200) {
+        pendingGRef.current = 0;
+        const target = GO_SHORTCUTS[e.key.toLowerCase()];
+        if (target) {
+          e.preventDefault();
+          setActiveView(target.view);
+          window.setTimeout(() => document.querySelector<HTMLElement>("main")?.focus({ preventScroll: false }), 100);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setActiveView]);
 
   // Polling status sistem (30s) — panicMode + jam server
   const statusQuery = useQuery({
