@@ -52,3 +52,19 @@ prompt
 server.log
 # Skills directory
 /skills/
+# runtime data (auto-seed saat boot backend)
+/db/
+# QA evidence screenshots
+/agent-shots/
+# sandbox artifacts
+/tool-results/
+/.zscripts/
+/upload/
+/download/
+/tests/
+/examples/
+__pycache__/
+*.pyc
+*.pyo
+# auto-generated API secret (regenerate otomatis saat run pertama)
+mini-services/family-office-api/secret.key
