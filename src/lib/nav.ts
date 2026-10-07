@@ -7,7 +7,9 @@ import {
   ArrowLeftRight,
   PieChart,
   TrendingUp,
+  LineChart,
   Landmark,
+  ReceiptText,
   FlaskConical,
   Users,
   Settings,
@@ -20,7 +22,9 @@ export type ViewKey =
   | "transactions"
   | "portfolio"
   | "trading"
+  | "market"
   | "governance"
+  | "tax"
   | "research"
   | "succession"
   | "settings";
@@ -37,7 +41,9 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "transactions", label: "Transaksi", icon: ArrowLeftRight },
   { key: "portfolio", label: "Portofolio", icon: PieChart },
   { key: "trading", label: "Trading", icon: TrendingUp },
+  { key: "market", label: "Pasar", icon: LineChart },
   { key: "governance", label: "Governance", icon: Landmark },
+  { key: "tax", label: "Pajak", icon: ReceiptText },
   { key: "research", label: "Riset", icon: FlaskConical },
   { key: "succession", label: "Suksesi", icon: Users },
   { key: "settings", label: "Pengaturan", icon: Settings },

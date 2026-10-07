@@ -56,6 +56,199 @@ export function useFormatCurrency() {
 }
 
 // ------------------------------------------------------------
+// Polish helpers — cardHover (utilitas hover lift kartu)
+// ------------------------------------------------------------
+
+/** Utilitas hover-lift — terapkan pada Card/StatCard/SectionCard (aman untuk semua view) */
+export const cardHover =
+  "transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md";
+
+// ------------------------------------------------------------
+// Count-up animation (StatCard) — requestAnimationFrame, 700ms easeOut
+// Backward-compatible: value non-numerik (ReactNode/string non-angka)
+// dirender langsung tanpa animasi.
+// ------------------------------------------------------------
+
+const COUNTUP_DURATION = 700;
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
+}
+
+/** Animasi angka dari nilai sebelumnya (awal 0) → target, easeOutCubic. */
+function useCountUp(target: number, duration = COUNTUP_DURATION): number {
+  const reduced = usePrefersReducedMotion();
+  const [display, setDisplay] = React.useState(0);
+  const currentRef = React.useRef(0);
+
+  React.useEffect(() => {
+    if (reduced) {
+      currentRef.current = target;
+      setDisplay(target);
+      return;
+    }
+    const from = currentRef.current;
+    if (from === target) {
+      setDisplay(target);
+      return;
+    }
+    const start =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = Math.min(
+        1,
+        ((typeof performance !== "undefined" ? performance.now() : Date.now()) -
+          start) /
+          duration,
+      );
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      const v = from + (target - from) * eased;
+      currentRef.current = t < 1 ? v : target;
+      setDisplay(currentRef.current);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, reduced]);
+
+  return display;
+}
+
+/** Metadata replay format string terformat agar count-up mempertahankan gaya aslinya. */
+interface NumericFormatInfo {
+  prefix: string;
+  suffix: string;
+  explicitPlus: boolean;
+  negative: boolean;
+  groupingSep: "," | "." | null;
+  decimalSep: "," | "." | null;
+  fracDigits: number;
+  value: number;
+}
+
+/**
+ * Parse string terformat — "$2,535,379.30", "Rp 40.003.721.671", "+12,3%",
+ * "15", "1,15" — menjadi angka + info format. Return null jika bukan angka
+ * murni (mis. "—", "12 Feb 2025") supaya StatCard merender langsung.
+ */
+function parseNumericFormat(raw: string): NumericFormatInfo | null {
+  if (!raw || !/\d/.test(raw)) return null;
+  const m = /^([^\d.,+\-]*)([+\-])?([\d.,]+)(.*)$/.exec(raw.trim());
+  if (!m) return null;
+  const prefix = m[1];
+  const sign = m[2];
+  const num = m[3];
+  const suffix = m[4];
+  // Ada digit di prefix/suffix → bukan angka murni (mis. tanggal) → jangan animasi
+  if (/\d/.test(prefix) || /\d/.test(suffix)) return null;
+  if (!num) return null;
+
+  const lastDot = num.lastIndexOf(".");
+  const lastComma = num.lastIndexOf(",");
+  let groupingSep: "," | "." | null = null;
+  let decimalSep: "," | "." | null = null;
+
+  if (lastDot >= 0 && lastComma >= 0) {
+    if (lastDot > lastComma) {
+      decimalSep = ".";
+      groupingSep = ",";
+    } else {
+      decimalSep = ",";
+      groupingSep = ".";
+    }
+  } else {
+    const sep = lastDot >= 0 ? "." : lastComma >= 0 ? "," : null;
+    if (sep) {
+      const parts = num.split(sep);
+      const after = parts[1] ?? "";
+      if (parts.length > 2) {
+        groupingSep = sep; // 40.003.721 / 2,535,379
+      } else if (after.length === 3 && parts[0] !== "") {
+        groupingSep = sep; // ambigu "96,378" → perlakukan sebagai ribuan
+      } else if (after.length > 0) {
+        decimalSep = sep; // "12,3" / "1.15"
+      }
+    }
+  }
+
+  const fracDigits = decimalSep ? (num.split(decimalSep)[1]?.length ?? 0) : 0;
+  const canonical =
+    (groupingSep ? num.split(groupingSep).join("") : num).replace(
+      decimalSep ?? "",
+      ".",
+    );
+  const value = Number(canonical);
+  if (!Number.isFinite(value)) return null;
+
+  return {
+    prefix,
+    suffix,
+    explicitPlus: sign === "+",
+    negative: value < 0 || sign === "-",
+    groupingSep,
+    decimalSep,
+    fracDigits,
+    value,
+  };
+}
+
+/** Replay string terformat dari angka teranimasi — bentuk identik dengan sampel. */
+function formatLike(info: NumericFormatInfo, n: number): string {
+  const locale = info.decimalSep === "," ? "id-ID" : "en-US";
+  const body = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: info.decimalSep ? info.fracDigits : 0,
+    maximumFractionDigits: info.decimalSep ? info.fracDigits : 0,
+    useGrouping: Boolean(info.groupingSep),
+  }).format(n);
+  const plus = info.explicitPlus && n > 0 ? "+" : "";
+  return `${plus}${info.prefix}${body}${info.suffix}`;
+}
+
+/**
+ * Hook internal StatCard: menghasilkan node teranimasi bila value numerik,
+ * atau value apa adanya bila tidak bisa dianimasikan (backward compatible).
+ */
+function useAnimatedValue(value: React.ReactNode): React.ReactNode {
+  const reduced = usePrefersReducedMotion();
+  const parsed = React.useMemo(() => {
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return null;
+      return {
+        info: null,
+        target: value,
+        raw: null as string | null,
+      };
+    }
+    if (typeof value === "string") {
+      const info = parseNumericFormat(value);
+      if (!info) return null;
+      return { info, target: info.value, raw: value };
+    }
+    return null;
+  }, [value]);
+
+  const animated = useCountUp(parsed ? parsed.target : 0);
+
+  if (!parsed || reduced) return value;
+  // Frame terakhir → string asli (menjamin bentuk persis sama)
+  if (parsed.raw !== null && animated === parsed.target) return parsed.raw;
+  if (parsed.info) return formatLike(parsed.info, animated);
+  return new Intl.NumberFormat("id-ID", { maximumFractionDigits: 2 }).format(
+    animated,
+  );
+}
+
+// ------------------------------------------------------------
 // Monogram "Z" — brand mark
 // ------------------------------------------------------------
 
@@ -116,8 +309,9 @@ interface StatCardProps {
 
 export function StatCard({ label, value, sub, delta, icon, loading, accent = "default", className }: StatCardProps) {
   const up = (delta ?? 0) >= 0;
+  const animatedValue = useAnimatedValue(loading ? null : value);
   return (
-    <Card className={cn("rounded-xl p-5 flex flex-col gap-3 min-h-[118px]", className)}>
+    <Card className={cn(cardHover, "rounded-xl p-5 flex flex-col gap-3 min-h-[118px]", className)}>
       <div className="flex items-start justify-between gap-3">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {label}
@@ -143,7 +337,7 @@ export function StatCard({ label, value, sub, delta, icon, loading, accent = "de
         </div>
       ) : (
         <>
-          <div className="text-2xl font-semibold tabular-nums leading-none">{value}</div>
+          <div className="text-2xl font-semibold tabular-nums leading-none">{animatedValue}</div>
           <div className="flex items-center gap-2 text-xs">
             {typeof delta === "number" && Number.isFinite(delta) && (
               <span
@@ -185,7 +379,12 @@ export function PageHeader({
     <div className={cn("flex flex-wrap items-end justify-between gap-4", className)}>
       <div className="space-y-1">
         <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
-        {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
+        {/* Aksen: garis gradient emerald → amber tipis di bawah judul */}
+        <div
+          aria-hidden="true"
+          className="h-0.5 w-14 rounded-full bg-gradient-to-r from-emerald-500 to-amber-400"
+        />
+        {subtitle && <p className="pt-1 text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
     </div>
@@ -212,7 +411,7 @@ export function SectionCard({
   contentClassName?: string;
 }) {
   return (
-    <Card className={cn("rounded-xl flex flex-col", className)}>
+    <Card className={cn(cardHover, "rounded-xl flex flex-col", className)}>
       {(title || actions) && (
         <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-5 pb-3">
           <div className="space-y-0.5 min-w-0">

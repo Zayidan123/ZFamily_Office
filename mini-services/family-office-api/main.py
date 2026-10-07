@@ -13,10 +13,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from db import create_tables, get_conn
 from errors import ApiError
-from routers import assets_tx, auth_system, dashboard, governance, knowledge, risk, trading
-from seed import seed_if_empty
+from routers import assets_tx, auth_system, dashboard, governance, knowledge, market, risk, tax, trading
+from seed import seed_if_empty, seed_market_tax_if_empty
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 @asynccontextmanager
@@ -27,6 +27,8 @@ async def lifespan(_app: FastAPI):
         create_tables(conn)
         if seed_if_empty(conn):
             print("[family-office-api] Seed data awal dibuat (demo keluarga Mr.Z)")
+        if seed_market_tax_if_empty(conn):
+            print("[family-office-api] Seed watchlist + tax obligations dibuat")
     finally:
         conn.close()
     yield
@@ -55,7 +57,7 @@ def health():
 # --------------------------------------------------------------- routers
 
 for _r in (auth_system.router, dashboard.router, assets_tx.router, governance.router,
-           risk.router, trading.router, knowledge.router):
+           risk.router, trading.router, knowledge.router, market.router, tax.router):
     app.include_router(_r, prefix="/api/v1")
 
 

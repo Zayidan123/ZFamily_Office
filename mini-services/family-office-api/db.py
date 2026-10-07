@@ -293,6 +293,27 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snap_date ON portfolio_snapshots(date);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol   TEXT NOT NULL UNIQUE,
+  note     TEXT,
+  addedAt  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tax_obligations (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  name      TEXT NOT NULL,
+  type      TEXT NOT NULL,
+  period    TEXT NOT NULL,
+  dueDate   TEXT NOT NULL,
+  amountUsd REAL,
+  paid      INTEGER NOT NULL DEFAULT 0,
+  paidAt    TEXT,
+  notes     TEXT,
+  createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tax_due ON tax_obligations(dueDate);
 """
 
 

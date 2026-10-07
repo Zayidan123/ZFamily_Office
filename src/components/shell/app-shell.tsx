@@ -14,6 +14,7 @@ import { api, ApiError } from "@/lib/api";
 import { NAV_ITEMS, VIEW_TITLES, type ViewKey } from "@/lib/nav";
 import { VIEW_COMPONENTS } from "@/components/views/registry";
 import { Monogram, RoleBadge } from "@/components/shared/kit";
+import PriceTicker from "@/components/shared/price-ticker";
 import LoginView from "@/components/auth/login-view";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -292,6 +293,9 @@ export default function AppShell() {
               </span>
             </div>
           </header>
+
+          {/* Price ticker — strip marquee harga live di bawah topbar */}
+          <PriceTicker />
 
           {/* Konten view */}
           <main className="flex-1 overflow-y-auto p-6 scrollbar-thin lg:p-8">

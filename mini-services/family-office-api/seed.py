@@ -403,3 +403,63 @@ def _seed(conn) -> None:
 
     write_audit(conn, None, "system.seed", "system",
                 "Seed data awal dibuat (demo keluarga Mr.Z): 4 user, 3 entitas, 15 aset, transaksi, strategi, approval, riset, suksesi")
+
+
+# ------------------------------------------------- watchlist + tax (modul baru)
+
+# symbol, note
+WATCHLIST = [
+    ("BTC", "Core holding — DCA bulanan"),
+    ("ETH", "Staking yield"),
+    ("XAU", "Hedge inflasi"),
+    ("BBCA", "Blue chip IDX"),
+    ("NVDA", "Growth watch"),
+    ("SUI", "Spekulatif kecil"),
+]
+
+# name, type, period, offset_hari_due (relatif now), amountUsd, paid, paid_days_ago, note
+TAX_OBLIGATIONS = [
+    ("PPh Orang Pribadi Tahunan 2025", "pajak penghasilan", "2025", 120, 18500.0, False, None,
+     "SPT tahunan — hitung PPh terutang setelah rekap dividen & capital gain"),
+    ("PBB P2 — Rumah Pondok Indah", "pajak properti", "2026", 20, 2200.0, False, None,
+     "Tagihan tahunan NJOP rumah — bayar via e-billing"),
+    ("PKB Toyota Alphard", "pajak kendaraan", "2026", 3, 850.0, False, None,
+     "Pajak kendaraan bermotor + PNBP samsat"),
+    ("PPh Final 0.1% Penjualan Saham", "pajak penghasilan", "Q1 2026", 15, 410.0, False, None,
+     "PPh final 0.1% dari bruto penjualan saham IDX kuartal berjalan"),
+    ("Pajak Bumi & Bangunan — rapih tahun lalu", "pajak properti", "2025", -300, 2050.0, True, 243,
+     "Bukti bayar PBB 2025 tersimpan di folder dokumen properti"),
+    ("Sumbangan Pendidikan", "lainnya", "2025", -180, 500.0, True, 152,
+     "Donasi tahunan yayasan pendidikan — deductibility dicek advisor"),
+]
+
+
+def seed_market_tax_if_empty(conn) -> bool:
+    """Seed modul Market (watchlist) & Tax — hanya jika tabel terkait masih kosong.
+
+    Aman dipanggil berulang: tabel lama tidak disentuh, tabel baru diisi sekali.
+    """
+    changed = False
+    if not query_one(conn, "SELECT id FROM watchlist LIMIT 1"):
+        for i, (sym, note) in enumerate(WATCHLIST):
+            execute(conn, "INSERT INTO watchlist(symbol, note, addedAt) VALUES(?,?,?)",
+                    (sym, note, _ago(45 - i * 7)))
+        write_audit(conn, None, "system.seed", "watchlist",
+                    f"Seed watchlist awal: {len(WATCHLIST)} simbol")
+        changed = True
+
+    if not query_one(conn, "SELECT id FROM tax_obligations LIMIT 1"):
+        for i, (name, t, period, due_off, amount, paid, paid_days, note) in enumerate(TAX_OBLIGATIONS):
+            due = datetime.now(timezone.utc) + timedelta(days=due_off)
+            paid_at = _ago(paid_days) if paid else None
+            execute(
+                conn,
+                "INSERT INTO tax_obligations(name, type, period, dueDate, amountUsd, paid, paidAt, notes, createdAt) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (name, t, period, due.strftime("%Y-%m-%d"), amount, 1 if paid else 0, paid_at,
+                 note, _ago(60 - i * 3)),
+            )
+        write_audit(conn, None, "system.seed", "tax_obligation",
+                    f"Seed kewajiban pajak awal: {len(TAX_OBLIGATIONS)} item (mix status)")
+        changed = True
+    return changed

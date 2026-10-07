@@ -245,3 +245,105 @@ Stage Summary:
 - Credential demo: owner@zfamily.id/owner123 · aisyah@zfamily.id/family123 · budi@partner.id/advisor123 · raka@zfamily.id/executor123.
 - Catatan infra: API hanya via gateway (path relatif + XTransformPort=8001); backend dipersistent via setsid.
 - Saran next phase (untuk cron reviewer): polish styling per-view, tambah fitur (MFA TOTP nyata, paper trading sandbox, cost basis FIFO/LIFO, reminder pajak, watchlist), hardening (rate limiting, refresh token).
+
+---
+Task ID: R-a
+Agent: backend-market-tax
+Task: Backend modul "Pasar" (Watchlist & Histori Harga) + "Pajak & Kepatuhan" — tambah 2 modul ke FastAPI :8001 TANPA merusak endpoint existing.
+
+Work Log:
+- Baca worklog.md (kontrak v1 + riwayat) + struktur backend: main.py (envelope + exception handlers + include router prefix /api/v1), db.py (DDL, audit, panic guard_mutation), security.py (require_auth RBAC), prices.py (get_rates/get_price_map, BASE_PRICES, VOLATILITY), seed.py, pola routers/governance.py (try/finally conn.close(), guard_mutation → execute → write_audit → ok()).
+- db.py: tambah DDL `watchlist` (id, symbol UNIQUE, note, addedAt) + `tax_obligations` (id, name, type, period, dueDate, amountUsd NULL, paid 0/1, paidAt NULL, notes, createdAt + idx dueDate) — CREATE TABLE IF NOT EXISTS, aman utk DB existing.
+- routers/market.py BARU (prefix /api/v1 via main):
+  - GET /market/watchlist (owner/beneficiary/advisor; executor 403) → tiap item {id, symbol, note, addedAt, price:{usd, change24hPct}} — price join live dari prices.get_rates().
+  - POST /market/watchlist (owner only) {symbol, note?} — symbol di-uppercase & divalidasi ada di price engine, else 400 "Simbol tidak dikenal"; duplikat 400; audit + panic guard; 201.
+  - DELETE /market/watchlist/{id} (owner only) — 404 jika tak ada; audit + panic guard; return {id, deleted:true}.
+  - GET /market/symbols (semua role) → [{symbol, usd, change24hPct}] utk dropdown.
+  - GET /market/history?symbol=BTC&days=30 (semua role) → {symbol, days, points:[{date:"YYYY-MM-DD", price}]} — DETERMINISTIK random.Random(f"{symbol}-{days}"), walk mundur dari harga live sekarang, langkah harian uniform(-vol, +vol) dgn volatilitas per simbol sama pola prices.py (VOLATILITY, default 0.02); days clamp 7..90 default 30; titik terakhir = harga sekarang; simbol tak dikenal 404.
+- routers/tax.py BARU:
+  - Konstanta TAX_RATE_DEMO = 0.05 (flat demo, dikomentari — bukan konsultasi pajak riil).
+  - GET /tax/obligations (owner/beneficiary/advisor) → [{id, name, type, period, dueDate, amountUsd, paid(bool), paidAt, notes, status}] — status DIHITUNG backend: paid→"paid"; dueDate<today→"overdue"; ≤today+7→"due_soon"; else "upcoming"; sort dueDate asc.
+  - POST /tax/obligations (owner only) — validasi name/type/period wajib + dueDate format YYYY-MM-DD & tanggal kalender valid (400), amountUsd ≥ 0; audit + panic guard; 201.
+  - PUT /tax/obligations/{id} (owner only) — partial update (name/type/period/dueDate/amountUsd/notes); khusus {paid:true/false} → paidAt=now ISO / NULL; 404 jika tak ada; audit + panic guard.
+  - DELETE /tax/obligations/{id} (owner only) — audit + panic guard.
+  - GET /tax/summary (auth sama dgn read) → {estimatedAnnualIncomeUsd (SUM total_usd transaksi type='income' tahun berjalan, harga sudah USD), estimatedTaxUsd (income × TAX_RATE_DEMO), paidCount, upcomingCount, dueSoonCount, overdueCount, nextDue:{name, dueDate, amountUsd}|null (unpaid dueDate terkecil)}.
+- main.py: include market.router + tax.router (prefix /api/v1); lifespan panggil seed_market_tax_if_empty(); VERSION 1.0.0 → 1.1.0.
+- seed.py: fungsi BARU seed_market_tax_if_empty(conn) — idempotent per tabel (hanya isi jika kosong, tabel lama tak disentuh), dipanggil dari lifespan sehingga DB existing langsung kebagian seed: watchlist 6 simbol (BTC "Core holding — DCA bulanan", ETH "Staking yield", XAU "Hedge inflasi", BBCA "Blue chip IDX", NVDA "Growth watch", SUI "Spekulatif kecil"); 6 kewajiban pajak dueDate RELATIF datetime.now(): PPh OP Tahunan 2025 (+120 hari, $18,500), PBB P2 (+20 hari, $2,200), PKB Alphard (+3 hari → due_soon, $850), PPh Final 0.1% (+15 hari, $410), PBB rapih tahun lalu (PAID paidAt -8 bln, $2,050), Sumbangan Pendidikan (PAID paidAt -5 bln, $500) + audit system.seed.
+- Verifikasi penuh via curl (lihat Stage Summary): restart backend (kill proses lama yg masih pegang port 8001 → start ulang bun run dev), regresi endpoint lama 200 semua, RBAC 4 peran, panic 423 ON/OFF, deterministic history, clamp days, validasi, audit log terisi, api.log bersih tanpa traceback. Data uji dibersihkan (watchlist & tax kembali 6/6 seed).
+
+Stage Summary:
+- BACKEND v1.1.0: 2 modul baru hidup di :8001, endpoint lama utuh (rates, dashboard/summary, assets, entities, approvals, audit, settings, trading, risk → 200).
+- Shape respons final (envelope {ok,data} / {ok,error}):
+  - GET /api/v1/market/watchlist → data: [{id:1, symbol:"BTC", note:"Core holding — DCA bulanan", addedAt:"2026-08-23T18:18:26Z", price:{usd:97000.0, change24hPct:-0.77}}] ×6.
+  - GET /api/v1/market/symbols → data: [{symbol:"BBCA", usd:0.615142, change24hPct:-0.65}, ... 9 simbol engine (BTC/ETH/BNB/SUI/XAU/BBCA/BBRI/TLKM/NVDA)].
+  - GET /api/v1/market/history?symbol=BTC&days=30 → data: {symbol:"BTC", days:30, points:[{date:"2026-09-08", price:108834.79}, ... 30 titik, terakhir = harga live sekarang]} — identik antar request (seed tetap).
+  - GET /api/v1/tax/obligations → data: 6 item, status hitung backend: {…, paid:true, paidAt:"2026-02-06T18:18:26Z", status:"paid"} | PKB Alphard (+3 hari) → "due_soon" | lainnya "upcoming"; sort dueDate asc.
+  - GET /api/v1/tax/summary → data: {estimatedAnnualIncomeUsd:1356.46, estimatedTaxUsd:67.82, paidCount:2, upcomingCount:3, dueSoonCount:1, overdueCount:0, nextDue:{name:"PKB Toyota Alphard", dueDate:"2026-10-10", amountUsd:850.0}}.
+  - Error: POST watchlist simbol asing → 400 {"ok":false,"error":"Simbol tidak dikenal"}; dueDate "31-12-2026" → 400 "dueDate harus format YYYY-MM-DD"; panic ON → 423 kill-switch.
+- RBAC terverifikasi: executor GET watchlist/tax → 403 (read market symbols/history 200); advisor GET watchlist 200 tapi POST/PUT/DELETE → 403; owner penuh.
+- Catatan: seed tax/watchlist incremental (seed_market_tax_if_empty) jalan untuk DB existing tanpa reset data demo; estimatedAnnualIncomeUsd mengikuti tahun berjalan server (SUM transactions type='income' total_usd, at ≥ 1 Jan).
+- Next (frontend R-b): view Pasar (watchlist table + add/delete owner-only + chart histori per simbol) & view Pajak (list + badge status + toggle paid owner-only + kartu summary).
+
+---
+Task ID: R-b
+Agent: frontend-market-tax-polish
+Task: View "Pasar" & "Pajak" + Styling Polish Global
+
+Work Log:
+- Baca worklog (kontrak R-b + catatan integrasi 1-b/2-a/2-b/2-c), lib/{nav,api,types,format,store}.ts, shared/kit.tsx, shell/app-shell.tsx, registry.tsx, dashboard-view.tsx (referensi).
+- Backend R-a belum siap saat mulai → kode sesuai kontrak dulu, poll `curl localhost:8001/api/v1/rates` → endpoint baru hidup ±5 menit kemudian (401 dulu saat anon, login owner → semua shape sesuai kontrak).
+- src/lib/nav.ts — ViewKey baru "market" (LineChart, "Pasar", setelah Trading) & "tax" (ReceiptText, "Pajak", setelah Governance); sidebar urutan final: Dashboard, Aset, Transaksi, Portofolio, Trading, Pasar, Governance, Pajak, Riset, Suksesi, Pengaturan.
+- src/components/views/market-view.tsx (baru, types inline WatchlistItem/SymbolInfo/MarketHistory): PageHeader + query ["market","watchlist"] refetch 30s, ["market","symbols"], ["market","history",symbol,days] (60s); 4 StatCard (jumlah dipantau, gainer teratas emerald, loser teratas rose, XAU/USD amber — XAU dari useRates dengan fallback /market/symbols); grid kartu watchlist (symbol + note StickyNote, harga CurrencyText, Δ24h badge emerald/rose, Sparkline SVG polyline inline dari history 30d dengan gradient emerald naik/rose turun, ConfirmButton hapus owner — stopPropagation agar tidak buka dialog); klik kartu → Dialog detail (AreaChart recharts + toggle 7/30/90 hari, harga sekarang, Δ per periode, note tampil + hint "ubah = hapus lalu tambah ulang" karena PUT tidak ada di kontrak); toolbar "+ Pantau Simbol" owner → Dialog Select simbol (dengan harga, simbol yang sudah dipantau difilter) + note opsional → POST → toast + invalidate; empty state elegan; skeleton card; ErrorBox retry.
+- src/components/views/tax-view.tsx (baru, types inline TaxObligation/TaxSummary): PageHeader "Pajak & Kepatuhan"; query ["tax","obligations"] & ["tax","summary"] (60s); 4 StatCard (Estimasi Income Tahun Ini, Estimasi Pajak + sub "asumsi rate demo 5%", Overdue rose jika >0, Next Due nama + tanggal + amount); banner kepatuhan emerald "Semua kewajiban lancar ✓" saat 0 overdue & due_soon; toolbar Select filter (Semua/Upcoming/Due Soon/Overdue/Paid) + "+ Kewajiban" owner → Dialog form (name*, type Select pajak penghasilan/properti/kendaraan/lainnya, period, dueDate* date, amountUsd opsional, notes) dengan validasi inline → POST; daftar kewajiban: nama + type badge, period, dueDate + countdown badge (overdue rose "Terlambat X hari", due_soon amber "X hari lagi"/"Hari ini!", upcoming zinc, paid emerald "Lunas" + paidAt), amount CurrencyText, aksi owner toggle "Tandai Lunas"/"Buka Lunas" (PUT {paid}) + ConfirmButton hapus; sorting overdue → due_soon → upcoming (dueDate asc) → paid (paidAt desc), baris overdue diberi bg rose lembut; ringkasan text kecil di bawah; skeleton/Empty/ErrorBox; RBAC tombol owner-only.
+- STYLING POLISH: (1) src/components/shared/price-ticker.tsx baru — strip h-8 di bawah topbar, useRates di-repeat 2x untuk loop mulus, item "SYM $harga Δ%" (harga en-US, 0 desimal untuk ≥1000, 2 desimal untuk kecil + USD/IDR Rp tanpa Δ), warna Δ emerald/rose, CSS marquee (keyframes zfo-marquee translateX(-50%), 40s linear infinite, pause on hover via .marquee-paused, prefers-reduced-motion → off), fade edges gradient, aria-hidden pada copy kedua, render bar kosong stabil saat rates belum ada; dipasang di app-shell antara header dan main (juga tampil di mobile). (2) kit.tsx — StatCard count-up: hook useCountUp (requestAnimationFrame, 700ms easeOutCubic, from nilai terakhir → target awal 0, hormati prefers-reduced-motion) + parseNumericFormat/formatLike (replay format string: "$2,535,379.30", "Rp 40.003.721.671", "+12,3%", "15" dianimasikan dengan format identik; string non-numerik/ReactNode render langsung — backward compatible penuh, semua view lama tanpa perubahan). (3) export const cardHover = "transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md" diterapkan ke StatCard & SectionCard. (4) PageHeader: garis aksen gradient emerald→amber (h-0.5 w-14) di bawah judul, subtitle diberi pt-1 agar layout tetap rapat.
+- registry.tsx — import + map MarketView & TaxView. globals.css — @keyframes zfo-marquee + .animate-marquee + .marquee-paused (dalam @layer utilities, token existing tidak disentuh).
+- ADAPTASI SHAPE BACKEND (temuan saat verifikasi): (a) tax type = string label Indonesia lowercase ("pajak penghasilan"/"pajak properti"/"pajak kendaraan"/"lainnya") — bukan enum key; (b) field `paid` dikirim sebagai JSON boolean (bukan 0|1 seperti draft kontrak) — UI dinormalisasi via truthy; (c) POST watchlist duplikat → 400 "Simbol X sudah ada di watchlist" (ditangani toast error).
+
+Verifikasi:
+- Endpoint baru via curl (owner): /market/symbols (9 simbol), /market/watchlist (6 seed), /market/history?symbol=BTC&days=30 (points YYYY-MM-DD), POST/PUT/DELETE watchlist, PUT /tax/obligations/3 {paid:true} → status "paid" + paidAt terisi, {paid:false} → kembali "due_soon", /tax/summary (estimatedAnnualIncomeUsd, estimatedTaxUsd, counts, nextDue). RBAC: executor POST watchlist & tax → 403.
+- bunx tsc --noEmit: 0 error di src/; bun run lint: 0 error/warning; dev.log kompilasi bersih; GET localhost:81/ → 200.
+- agent-browser (session zfo-rb, via gateway :81): login owner → sidebar ada "Pasar" & "Pajak" di urutan benar → Pasar: 4 stat terisi (6 dipantau, Gainer ETH +2,8%, Loser NVDA −1,3%, XAU $2,637 +0,3%), 6 kartu dengan sparkline + note, dialog detail BTC (chart ter-render, toggle 7/30/90 → perubahan −10,9% @30d & 90d, catatan tampil), tambah TLKM + note → toast → kartu muncul, hapus 2-klik → toast "dihapus" → grid kembali 6; Pajak: 4 stat terisi ($1,356.46 / $67.82 @5% / 0 overdue / Next Due PKB 10 Okt), Tandai Lunas PKB → "Lunas" + banner "Semua kewajiban lancar ✓" muncul, Buka Lunas → kembali due_soon & banner hilang, tambah "Uji Kewajiban R-b" → muncul → hapus → bersih, filter Paid → hanya 2 baris lunas, filter kembali Semua; ticker marquee terlihat (status "Ticker harga pasar", 78 span = 39×2, computed animationName zfo-marquee 40s running, viewport mobile 390×844 tetap tampil h-32px); regresi view lama: Dashboard StatCard "$2,509,228.41"/"15"/"1" format persis, Trading "$20,350.00"/"67,2%"/"2" benar, PageHeader accent line + 9 kartu hover-lift terdeteksi; 0 page error & 0 console error di seluruh sesi; session ditutup (agent-browser --session zfo-rb close).
+- Gotcha infra: setelah edit globals.css, Turbopack dev tidak merebuild CSS chunk sampai file di-touch lagi — marquee sempat computed "animation: none"; setelah touch + reload → terkompilasi & jalan (bukan bug kode; dicatat untuk agent berikutnya).
+
+Stage Summary:
+- Fitur jalan penuh: View Pasar (watchlist CRUD owner + sparkline + detail chart 7/30/90 + harga live 30s) dan View Pajak (CRUD kewajiban + toggle lunas + countdown + filter + banner kepatuhan + ringkasan estimasi); polish global: PriceTicker marquee live di bawah topbar, count-up animasi StatCard yang format-preserving & backward-compatible, card hover lift, aksen gradient PageHeader.
+- File dibuat: market-view.tsx, tax-view.tsx, price-ticker.tsx. File diedit: nav.ts, registry.tsx, kit.tsx, app-shell.tsx, globals.css. TIDAK menyentuh api.ts/store.ts/types.ts/view lain/mini-services.
+- Data uji dibersihkan (watchlist & tax kembali ke seed; PKB due_soon). Catatan integrasi: backend `paid` boolean & `type` string Indonesia lowercase — kontrak draft 0|1 tidak dipakai backend; executor 403 otomatis via apiFetch.
+---
+Task ID: R-c
+Agent: qa-integration
+Task: Verifikasi integrasi final modul Pasar & Pajak
+
+Work Log:
+- curl localhost:3000/ → 200 OK; curl localhost:8001/api/v1/rates → 200 OK (backend sudah hidup, tidak perlu restart)
+- Login owner via curl → token didapat (155 char)
+- GET /market/watchlist (auth) → ok, 6 item (BTC, ETH, XAU, BBCA, NVDA, SUI) + harga live & change24h
+- GET /market/symbols (auth) → ok, 9 simbol (endpoint butuh token; frontend mengirim token, aman)
+- GET /market/history?symbol=BTC&days=30 → ok, 30 poin (2026-09-08 s/d sekarang)
+- GET /tax/obligations → ok, 6 kewajiban dengan field status/paid konsisten
+- GET /tax/summary → ok (income $1,356.46, pajak $67.82, 2 lunas / 3 upcoming / 1 due soon / 0 overdue, next due PKB Alphard)
+- agent-browser (session zfo-rc): open :81 → login "Masuk sebagai Owner (Mr.Z)" → dashboard render; sidebar memuat item "Pasar" dan "Pajak"
+- Klik "Pasar" → 6 kartu watchlist render (simbol, catatan, harga, %24h) + sparkline SVG (41 elemen svg / 95 polyline-path) + ticker 10 simbol + gainer/loser
+- Klik "Pajak" → 6 kewajiban render + 12 badge (tipe & status: "3 hari lagi", "Lunas", dst) + 4 kartu ringkasan + footer rekap
+- agent-browser errors → 0; console hanya info React DevTools + HMR (tanpa error); browser ditutup
+- bun run lint → exit 0
+- tail dev.log → hanya "✓ Compiled" dan GET 200, tanpa error kompilasi
+
+Stage Summary:
+- SEMUA OK — integrasi end-to-end modul Pasar & Pajak terverifikasi penuh (backend 5/5 endpoint, UI render 2 halaman, 0 error browser, lint bersih, log kompilasi bersih). Tidak ada perbaikan yang diperlukan. Sisa risiko: /market/symbols menolak request tanpa token (by design; frontend selalu mengirim Bearer token).
+---
+Task ID: R-final
+Agent: orchestrator (main) — cron webDevReview ronde #1
+Task: QA rutin + fitur baru Modul Pasar & Pajak + styling polish.
+
+Work Log:
+- QA awal: semua service 200, login owner OK, 0 console error → status STABIL.
+- Fokus: fitur baru Modul "Pasar" (watchlist+histori, PRD #25) & "Pajak & Kepatuhan" (PRD modul F) + styling polish.
+- [R-a] Backend: 2 tabel baru + 7 endpoint (watchlist CRUD, symbols, history deterministik, obligations CRUD, summary) — RBAC/panic/audit lengkap, regresi lolos, v1.1.0.
+- [R-b] Frontend: view Pasar (sparkline + AreaChart 7/30/90d) & Pajak (countdown, tandai lunas, estimasi pajak); nav/registry +2; polish: PriceTicker marquee, StatCard count-up, card hover lift, aksen PageHeader.
+- [R-c] QA integrasi final agent terpisah: E2E lolos percobaan pertama, 0 bug, 0 console error, lint exit 0.
+
+Stage Summary:
+- Platform kini 11 view + ticker harga live; backend v1.1.0. Semua verifikasi hijau.
+- Risiko minor: Turbopack kadang perlu touch globals.css agar CSS chunk rebuild; /market/symbols butuh token (by design).
+- Rekomendasi ronde berikut: MFA TOTP, paper trading sandbox, cost basis FIFO/LIFO, export CSV transaksi, dark-mode audit menyeluruh, mobile polish per-view.

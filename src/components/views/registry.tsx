@@ -12,7 +12,9 @@ import AssetsView from "@/components/views/assets-view";
 import TransactionsView from "@/components/views/transactions-view";
 import PortfolioView from "@/components/views/portfolio-view";
 import TradingView from "@/components/views/trading-view";
+import MarketView from "@/components/views/market-view";
 import GovernanceView from "@/components/views/governance-view";
+import TaxView from "@/components/views/tax-view";
 import ResearchView from "@/components/views/research-view";
 import SuccessionView from "@/components/views/succession-view";
 import SettingsView from "@/components/views/settings-view";
@@ -23,7 +25,9 @@ export const VIEW_COMPONENTS: Record<ViewKey, ComponentType> = {
   transactions: TransactionsView,
   portfolio: PortfolioView,
   trading: TradingView,
+  market: MarketView,
   governance: GovernanceView,
+  tax: TaxView,
   research: ResearchView,
   succession: SuccessionView,
   settings: SettingsView,

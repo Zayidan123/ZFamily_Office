@@ -143,4 +143,30 @@
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  /* ==========================================================
+     PriceTicker — marquee horizontal (loop mulus 2x konten)
+     ========================================================== */
+  @keyframes zfo-marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  .animate-marquee {
+    animation: zfo-marquee 40s linear infinite;
+    will-change: transform;
+  }
+  .marquee-paused:hover .animate-marquee {
+    animation-play-state: paused;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-marquee {
+      animation: none;
+    }
+  }
 }
+
+/* touch 1791398355 */
