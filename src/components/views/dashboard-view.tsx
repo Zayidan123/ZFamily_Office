@@ -33,6 +33,7 @@ import type {
   AlertItemWithRead,
   DashboardSummary,
   HistoryPoint,
+  NotifyChannelsData,
   TradingAlertRow,
   Transaction,
   UnreadCount,
@@ -70,6 +71,8 @@ import {
   HeartPulse,
   ShieldCheck,
   Database,
+  Mail,
+  Send,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -171,6 +174,23 @@ export default function DashboardView() {
     }
     return m;
   }, [tradingAlertsQuery.data]);
+
+  // ---------- Kanal notifikasi terhubung (ronde 10 — Task X-c) ----------
+  // Key sama dgn settings-view → toggle kanal di Pengaturan otomatis refresh di sini.
+  const notifyChQ = useQuery<NotifyChannelsData, ApiError>({
+    queryKey: ["notify-channels"],
+    queryFn: () => apiFetch<NotifyChannelsData>("/settings/notification-channels"),
+    enabled: canManageRead,
+    staleTime: 30_000,
+    retry: false, // executor 403 → indikator disembunyikan
+  });
+  const activeChannels = React.useMemo(() => {
+    const ch = notifyChQ.data?.channels;
+    if (!ch) return [] as { key: "email" | "telegram"; target: string }[];
+    return (Object.keys(ch) as ("email" | "telegram")[])
+      .filter((k) => ch[k]?.enabled && !!ch[k]?.target)
+      .map((k) => ({ key: k, target: ch[k]!.target }));
+  }, [notifyChQ.data]);
 
   const markReadM = useMutation({
     mutationFn: (id: string) =>
@@ -614,6 +634,24 @@ export default function DashboardView() {
           description="Alert sistem & trading"
           actions={
             <div className="flex items-center gap-2">
+              {canManageRead && activeChannels.length > 0 && (
+                <Badge
+                  variant="outline"
+                  className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                  title={`Kanal notifikasi terhubung: ${activeChannels
+                    .map((c) => (c.key === "email" ? `Email (${c.target})` : `Telegram (${c.target})`))
+                    .join(" · ")}`}
+                >
+                  {activeChannels.map((c) =>
+                    c.key === "email" ? (
+                      <Mail key={c.key} className="h-3 w-3" aria-hidden="true" />
+                    ) : (
+                      <Send key={c.key} className="h-3 w-3" aria-hidden="true" />
+                    ),
+                  )}
+                  {activeChannels.length} kanal
+                </Badge>
+              )}
               {canManageRead && unread > 0 && (
                 <Badge
                   variant="outline"

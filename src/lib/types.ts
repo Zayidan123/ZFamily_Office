@@ -509,3 +509,50 @@ export interface PaperTrade {
   realizedPnlUsd: number | null;
   at: string;
 }
+
+// ---------- Laporan Pajak Tahunan (v1.8.0 — ronde 10, GET /tax/annual-report) ----------
+/** Baris kewajiban dalam laporan tahunan (shape = baris /tax/obligations) */
+export interface TaxAnnualObligation {
+  id: number;
+  name: string;
+  type: string;
+  period: string | null;
+  dueDate: string;
+  amountUsd: number | null;
+  paid: boolean;
+  paidAt: string | null;
+  notes: string;
+  status: "paid" | "overdue" | "due_soon" | "upcoming";
+}
+
+export interface TaxAnnualTotals {
+  count: number;
+  totalUsd: number;
+  paidUsd: number;
+  outstandingUsd: number;
+  overdueCount: number;
+}
+
+export interface TaxAnnualByType {
+  type: string;
+  count: number;
+  totalUsd: number;
+  paidUsd: number;
+  outstandingUsd: number;
+}
+
+export interface TaxAnnualIncome {
+  incomeUsd: number;
+  taxRate: number;
+  estimatedTaxUsd: number;
+}
+
+export interface TaxAnnualReport {
+  year: number;
+  obligations: TaxAnnualObligation[];
+  totals: TaxAnnualTotals;
+  byType: TaxAnnualByType[];
+  income: TaxAnnualIncome;
+  /** union token tahun di period/dueDate semua kewajiban + tahun berjalan (desc) */
+  availableYears: number[];
+}

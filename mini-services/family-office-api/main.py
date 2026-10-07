@@ -17,7 +17,7 @@ from routers import (alerts_price, analytics, assets_tx, auth_system, dashboard,
                      governance, knowledge, market, notify_channels, paper, risk, tax, trading)
 from seed import seed_if_empty, seed_market_tax_if_empty, seed_price_alerts_if_empty
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 
 @asynccontextmanager

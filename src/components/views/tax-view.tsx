@@ -2,9 +2,10 @@
 
 // ============================================================
 // Pajak & Kepatuhan — kewajiban pajak + reminder + ringkasan
-// GET /tax/obligations · /tax/summary
+// GET /tax/obligations · /tax/summary · /tax/annual-report?year=
 // POST/PUT/DELETE /tax/obligations (owner) · PUT {paid} toggle lunas
 // Grup: overdue & due_soon di atas · banner kepatuhan emerald
+// Laporan Tahunan (PDF): overlay print (ronde 10 — Task X-a)
 // ============================================================
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +13,8 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAppStore } from "@/lib/store";
 import { formatDate, formatPct } from "@/lib/format";
+import type { TaxAnnualReport } from "@/lib/types";
+import PrintTaxReport from "@/components/shared/print-tax-report";
 import {
   StatCard,
   PageHeader,
@@ -56,6 +59,7 @@ import {
   AlertTriangle,
   CalendarClock,
   ShieldCheck,
+  Printer,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -325,10 +329,15 @@ export default function TaxView() {
   const queryClient = useQueryClient();
   const user = useAppStore((s) => s.user);
   const isOwner = user?.role === "owner";
+  // Executor tanpa akses baca pajak (403) — kontrol laporan disembunyikan
+  const isExecutor = user?.role === "executor";
   const formatCurrency = useFormatCurrency();
 
   const [filter, setFilter] = React.useState<"all" | TaxStatus>("all");
   const [addOpen, setAddOpen] = React.useState(false);
+  const currentYear = React.useMemo(() => new Date().getFullYear(), []);
+  const [reportYear, setReportYear] = React.useState<number>(currentYear);
+  const [printOpen, setPrintOpen] = React.useState(false);
 
   // ---------- Queries ----------
   const obligationsQuery = useQuery<TaxObligation[], ApiError>({
@@ -345,13 +354,30 @@ export default function TaxView() {
     staleTime: 50_000,
   });
 
+  // Laporan pajak tahunan (murah — muat sejak awal agar Select tahun siap)
+  const annualQuery = useQuery<TaxAnnualReport, ApiError>({
+    queryKey: ["tax", "annual", reportYear],
+    queryFn: () =>
+      apiFetch<TaxAnnualReport>("/tax/annual-report", { params: { year: reportYear } }),
+    enabled: !isExecutor,
+    staleTime: 50_000,
+    retry: false,
+  });
+
   const obligations = obligationsQuery.data ?? [];
   const summary = summaryQuery.data;
+  const annual = annualQuery.data;
+  const yearOptions = React.useMemo(() => {
+    const set = new Set<number>(annual?.availableYears ?? []);
+    set.add(currentYear);
+    return [...set].sort((a, b) => b - a);
+  }, [annual?.availableYears, currentYear]);
 
   // ---------- Mutations ----------
   const invalidateTax = () => {
     void queryClient.invalidateQueries({ queryKey: ["tax", "obligations"] });
     void queryClient.invalidateQueries({ queryKey: ["tax", "summary"] });
+    void queryClient.invalidateQueries({ queryKey: ["tax", "annual"] });
   };
 
   const addMutation = useMutation({
@@ -442,17 +468,52 @@ export default function TaxView() {
         title="Pajak & Kepatuhan"
         subtitle="Kewajiban pajak, jatuh tempo, dan reminder kepatuhan keluarga."
         actions={
-          isOwner && (
-            <Button
-              type="button"
-              size="sm"
-              className="min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
-              onClick={() => setAddOpen(true)}
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Kewajiban
-            </Button>
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            {!isExecutor && (
+              <>
+                <Select
+                  value={String(reportYear)}
+                  onValueChange={(v) => setReportYear(Number(v))}
+                >
+                  <SelectTrigger
+                    className="h-9 w-[112px]"
+                    aria-label="Tahun laporan pajak"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {yearOptions.map((y) => (
+                      <SelectItem key={y} value={String(y)}>
+                        Tahun {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="min-h-[40px] gap-2 border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-400"
+                  aria-label={`Buka pratinjau laporan pajak tahunan ${reportYear}`}
+                  onClick={() => setPrintOpen(true)}
+                >
+                  <Printer className="h-4 w-4" aria-hidden="true" />
+                  Laporan PDF
+                </Button>
+              </>
+            )}
+            {isOwner && (
+              <Button
+                type="button"
+                size="sm"
+                className="min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
+                onClick={() => setAddOpen(true)}
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Kewajiban
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -682,6 +743,14 @@ export default function TaxView() {
         onOpenChange={setAddOpen}
         pending={addMutation.isPending}
         onSubmit={(body) => addMutation.mutate(body)}
+      />
+
+      <PrintTaxReport
+        open={printOpen}
+        onOpenChange={setPrintOpen}
+        year={reportYear}
+        report={annual}
+        loading={annualQuery.isPending && !annual}
       />
     </div>
   );

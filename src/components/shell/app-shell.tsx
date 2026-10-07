@@ -34,7 +34,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Menu, LogOut, AlertOctagon, Search, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Menu, LogOut, AlertOctagon, ShieldAlert, Search, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 // ------------------------------------------------------------
 // Splash (menghindari hydration mismatch saat store rehydrate)
@@ -460,6 +460,44 @@ export default function AppShell() {
               </span>
             </div>
           </header>
+
+          {/* ============ Banner Panic Mode global (semua view) ============ */}
+          <AnimatePresence>
+            {panicMode && (
+              <motion.div
+                key="panic-banner"
+                role="alert"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                className="sticky top-16 z-20 overflow-hidden"
+              >
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-rose-500/40 bg-gradient-to-r from-rose-500/15 via-rose-500/5 to-transparent px-4 py-2.5 lg:px-8">
+                  <ShieldAlert
+                    className="h-4 w-4 shrink-0 animate-pulse text-rose-600 dark:text-rose-400"
+                    aria-hidden="true"
+                  />
+                  <p className="min-w-0 flex-1 text-xs font-semibold text-rose-700 dark:text-rose-300">
+                    Panic mode aktif — semua operasi tulis diblokir, sistem berjalan mode
+                    baca-saja.
+                  </p>
+                  {user?.role === "owner" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 border-rose-500/40 px-2.5 text-xs text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+                      aria-label="Buka pengaturan untuk mengelola panic mode"
+                      onClick={() => goTo("settings")}
+                    >
+                      Kelola
+                    </Button>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Price ticker — strip marquee harga live di bawah topbar */}
           <PriceTicker />

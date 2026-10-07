@@ -19,7 +19,7 @@ from security import hash_password, require_auth, sign_token, verify_token
 
 router = APIRouter(tags=["auth-system"])
 
-VERSION = "1.7.0"  # selaraskan dengan VERSION di main.py
+VERSION = "1.8.0"  # selaraskan dengan VERSION di main.py
 ALLOWED_CURRENCIES = {"USD", "IDR"}
 ALLOWED_TARGET_KEYS = {"crypto", "stocks", "forexGold", "property", "cash"}
 

@@ -1,9 +1,9 @@
-"""Tax & Kepatuhan: kewajiban pajak keluarga + ringkasan estimasi."""
+"""Tax & Kepatuhan: kewajiban pajak keluarga + ringkasan + laporan tahunan."""
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from db import execute, get_conn, guard_mutation, now_iso, query, query_one, r2, write_audit
@@ -215,6 +215,107 @@ def tax_summary(user: dict = Depends(require_auth("owner", "beneficiary", "advis
             "dueSoonCount": due_soon,
             "overdueCount": overdue,
             "nextDue": next_due,
+        })
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------- annual report
+
+YEAR_TOKEN_RE = re.compile(r"(20\d{2})")
+
+
+@router.get("/tax/annual-report")
+def annual_report(
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    user: dict = Depends(require_auth("owner", "beneficiary", "advisor")),
+):
+    """Laporan pajak tahunan: kewajiban milik `year` + estimasi income/pajak tahun tsb.
+
+    Aturan keanggotaan tahun untuk sebuah kewajiban (dijelaskan di UI laporan):
+      1) `period` mengandung token tahun (mis. "2025", "Q1 2026"), ATAU
+      2) `period` kosong dan `dueDate` berada pada tahun tsb.
+    Read-only — tanpa panic guard, tanpa audit (sama seperti GET tax lain).
+    """
+    conn = get_conn()
+    try:
+        rows = query(conn, "SELECT * FROM tax_obligations ORDER BY dueDate ASC, id ASC")
+        current_year = _today().year
+        y = year if year is not None else current_year
+        y_str = str(y)
+
+        # ---- availableYears: union token period + tahun dueDate + tahun ini
+        years = {current_year}
+        for r in rows:
+            for tok in YEAR_TOKEN_RE.findall(r["period"] or ""):
+                years.add(int(tok))
+            if (r["dueDate"] or "")[:4].isdigit():
+                years.add(int(r["dueDate"][:4]))
+
+        # ---- kewajiban milik tahun y
+        owned = []
+        for r in rows:
+            period = r["period"] or ""
+            if YEAR_TOKEN_RE.search(period):
+                if y_str in period:
+                    owned.append(r)
+            elif (r["dueDate"] or "")[:4] == y_str:
+                owned.append(r)
+
+        obligations = [_tax_row(r) for r in owned]
+        total_usd = r2(sum(o["amountUsd"] or 0 for o in obligations))
+        paid_usd = r2(sum(o["amountUsd"] or 0 for o in obligations if o["paid"]))
+        outstanding_usd = r2(total_usd - paid_usd)
+        overdue_count = sum(1 for o in obligations if o["status"] == "overdue")
+
+        # ---- agregat per jenis (urut total terbesar)
+        by_type: dict[str, dict] = {}
+        for o in obligations:
+            t = by_type.setdefault(
+                o["type"],
+                {"type": o["type"], "count": 0, "totalUsd": 0.0, "paidUsd": 0.0, "outstandingUsd": 0.0},
+            )
+            t["count"] += 1
+            amt = o["amountUsd"] or 0
+            t["totalUsd"] += amt
+            if o["paid"]:
+                t["paidUsd"] += amt
+        type_rows = []
+        for t in sorted(by_type.values(), key=lambda x: -x["totalUsd"]):
+            type_rows.append({
+                "type": t["type"],
+                "count": t["count"],
+                "totalUsd": r2(t["totalUsd"]),
+                "paidUsd": r2(t["paidUsd"]),
+                "outstandingUsd": r2(t["totalUsd"] - t["paidUsd"]),
+            })
+
+        # ---- income transaksi tahun y (estimasi PPh flat TAX_RATE_DEMO)
+        income_row = query_one(
+            conn,
+            "SELECT COALESCE(SUM(total_usd), 0) AS total FROM transactions "
+            "WHERE type = 'income' AND at >= ? AND at < ?",
+            (f"{y}-01-01", f"{y + 1}-01-01"),
+        )
+        income = r2(income_row["total"])
+
+        return ok({
+            "year": y,
+            "obligations": obligations,
+            "totals": {
+                "count": len(obligations),
+                "totalUsd": total_usd,
+                "paidUsd": paid_usd,
+                "outstandingUsd": outstanding_usd,
+                "overdueCount": overdue_count,
+            },
+            "byType": type_rows,
+            "income": {
+                "incomeUsd": income,
+                "taxRate": TAX_RATE_DEMO,
+                "estimatedTaxUsd": r2(income * TAX_RATE_DEMO),
+            },
+            "availableYears": sorted(years, reverse=True),
         })
     finally:
         conn.close()
