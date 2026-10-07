@@ -106,18 +106,24 @@ def _round_price(p: float) -> float:
     return round(p, 2) if p >= 100 else round(p, 4)
 
 
-@router.get("/market/history")
-def market_history(symbol: str, days: int = Query(30), user: dict = Depends(require_auth())):
+def history_points(symbol: str, days: int) -> list:
     """Histori harga harian DETERMINISTIK (seed tetap per symbol+days).
 
     Walk mundur dari harga live sekarang; langkah harian memakai volatilitas
     per simbol yang sama polanya dengan prices.py (uniform ±vol).
+    Raises ApiError(404) bila simbol tidak dikenal engine. `days` TIDAK
+    di-clamp di sini (pemanggil yang menentukan).
+
+    Dipakai endpoint /market/history DAN benchmark analytics (Task V-a):
+    analytics memanggil dgn days TETAP (BENCH_HISTORY_DAYS) sehingga seed
+    hanya bergantung simbol -> kunci bulan yang sama selalu menghasilkan
+    close bulanan yang sama di semua panjang window (sifat sufiks).
     """
     sym = (symbol or "").strip().upper()
     prices = _rates_prices()
     if sym not in prices:
         raise ApiError(404, "Simbol tidak dikenal")
-    days = max(7, min(90, int(days or 30)))  # clamp 7..90 (default 30)
+    days = int(days)
 
     now_usd = float(prices[sym]["usd"])
     vol = VOLATILITY.get(sym, DEFAULT_VOL)
@@ -135,5 +141,12 @@ def market_history(symbol: str, days: int = Query(30), user: dict = Depends(requ
     for i, p in enumerate(series):
         d = today - timedelta(days=(days - 1 - i))
         points.append({"date": d.strftime("%Y-%m-%d"), "price": _round_price(p)})
+    return points
 
-    return ok({"symbol": sym, "days": days, "points": points})
+
+@router.get("/market/history")
+def market_history(symbol: str, days: int = Query(30), user: dict = Depends(require_auth())):
+    """Histori harga harian DETERMINISTIK (seed tetap per symbol+days) — lihat history_points()."""
+    sym = (symbol or "").strip().upper()
+    days = max(7, min(90, int(days or 30)))  # clamp 7..90 (default 30)
+    return ok({"symbol": sym, "days": days, "points": history_points(sym, days)})

@@ -299,7 +299,7 @@ function RuleFormDialog({
             Batal
           </Button>
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             disabled={!form.beneficiaryName.trim() || saveM.isPending}
             onClick={() => saveM.mutate()}
           >
@@ -336,7 +336,7 @@ function RulesTab({ isOwner }: { isOwner: boolean }) {
         {isOwner && (
           <Button
             size="sm"
-            className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+            className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             onClick={() => {
               setEditing(null);
               setOpen(true);
@@ -485,7 +485,7 @@ function EmergencyTab({ isOwner }: { isOwner: boolean }) {
         {isOwner && (
           <Button
             size="sm"
-            className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+            className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             onClick={() => setOpen(true)}
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
@@ -598,7 +598,7 @@ function EmergencyTab({ isOwner }: { isOwner: boolean }) {
               Batal
             </Button>
             <Button
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               disabled={!form.title.trim() || !form.content.trim() || createM.isPending}
               onClick={() => createM.mutate()}
             >
@@ -712,7 +712,7 @@ function GoalFormDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             Batal
           </Button>
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             disabled={!form.name.trim() || !(Number(form.targetUsd) > 0) || createM.isPending}
             onClick={() => createM.mutate()}
           >
@@ -745,7 +745,7 @@ function GoalsTab({ isOwner }: { isOwner: boolean }) {
         {isOwner && (
           <Button
             size="sm"
-            className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+            className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             onClick={() => setOpen(true)}
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
@@ -1168,7 +1168,7 @@ function CapsuleFormDialog({ open, onOpenChange }: { open: boolean; onOpenChange
             Batal
           </Button>
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             disabled={!form.title.trim() || !form.content.trim() || createM.isPending}
             onClick={() => createM.mutate()}
           >
@@ -1198,7 +1198,7 @@ function CapsulesTab({ isOwner }: { isOwner: boolean }) {
         {isOwner && (
           <Button
             size="sm"
-            className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+            className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             onClick={() => setOpen(true)}
           >
             <Plus className="h-4 w-4" aria-hidden="true" />

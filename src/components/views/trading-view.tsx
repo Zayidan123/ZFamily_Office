@@ -487,7 +487,7 @@ function PaperTradingPanel() {
                       focusRing,
                       "h-10 border",
                       side === "buy"
-                        ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700"
+                        ? "border-emerald-600 bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                         : "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400",
                     )}
                   >
@@ -502,7 +502,7 @@ function PaperTradingPanel() {
                       focusRing,
                       "h-10 border",
                       side === "sell"
-                        ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-700"
+                        ? "border-rose-600 bg-rose-600 text-primary-foreground hover:bg-rose-700"
                         : "border-rose-500/40 bg-rose-500/5 text-rose-700 hover:bg-rose-500/15 dark:text-rose-400",
                     )}
                   >
@@ -551,7 +551,7 @@ function PaperTradingPanel() {
                 type="submit"
                 className={cn(
                   focusRing,
-                  "h-11 w-full bg-emerald-600 text-white hover:bg-emerald-700",
+                  "h-11 w-full bg-emerald-600 text-primary-foreground hover:bg-emerald-700",
                 )}
                 disabled={orderM.isPending || !symbol || !qtyValid}
               >

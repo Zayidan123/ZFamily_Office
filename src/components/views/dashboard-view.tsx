@@ -768,7 +768,7 @@ export default function DashboardView() {
             <Button
               type="button"
               size="sm"
-              className="min-h-[40px] shrink-0 bg-emerald-600 text-white hover:bg-emerald-700"
+              className="min-h-[40px] shrink-0 bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               onClick={() => snapshotMutation.mutate()}
               disabled={snapshotMutation.isPending}
               aria-label="Ambil snapshot net worth hari ini"

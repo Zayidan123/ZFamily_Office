@@ -26,6 +26,7 @@ import {
 } from "@/components/shared/kit";
 import type {
   AssetClass,
+  BenchmarkReport,
   MonthlyReport,
   RiskOverview,
   Settings,
@@ -59,6 +60,9 @@ import {
   CartesianGrid,
   Cell,
   Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -82,6 +86,8 @@ import {
   FileBarChart2,
   TrendingUp,
   TrendingDown,
+  Scale,
+  Trophy,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -181,6 +187,15 @@ function ReportsPerformancePanel() {
     retry: false,
   });
 
+  // Perbandingan benchmark (v1.5.0 — Task V-a) — seri terindeks 100 = awal periode
+  const benchmarkQuery = useQuery<BenchmarkReport, ApiError>({
+    queryKey: ["reports", "benchmark", months],
+    queryFn: () => apiFetch<BenchmarkReport>("/reports/benchmark", { params: { months } }),
+    enabled: !isExecutor,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   // Ekspor CSV laporan — blob + Bearer (pola apiGetBlob, S-b)
   const exportCsvM = useMutation({
     mutationFn: async () => {
@@ -218,6 +233,38 @@ function ReportsPerformancePanel() {
       })),
     [rows],
   );
+
+  // Gabungkan seri benchmark per bulan → { label, Portofolio, BTC, Emas, Seimbang }
+  const benchData = React.useMemo(() => {
+    const series = benchmarkQuery.data?.series ?? [];
+    const byMonth = new Map<string, { label: string } & Record<string, number | string>>();
+    for (const s of series) {
+      for (const p of s.points) {
+        const row = byMonth.get(p.month) ?? { label: formatMonthLabel(p.month) };
+        row[s.label] = p.value;
+        byMonth.set(p.month, row);
+      }
+    }
+    return Array.from(byMonth.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, row]) => row);
+  }, [benchmarkQuery.data]);
+
+  const benchSummary = benchmarkQuery.data?.summary;
+  const benchPending = benchmarkQuery.isPending;
+  const benchError =
+    benchmarkQuery.isError && benchmarkQuery.error instanceof ApiError
+      ? benchmarkQuery.error
+      : null;
+  const showBench =
+    !isExecutor && !benchPending && !benchError && benchData.length > 0;
+
+  const BENCH_STYLES: Record<string, { color: string; width: number }> = {
+    "Portofolio Keluarga": { color: "#10b981", width: 2.5 },
+    "BTC Buy & Hold": { color: "#f59e0b", width: 1.8 },
+    "Emas (XAU) Buy & Hold": { color: "#a1a1aa", width: 1.8 },
+    "Seimbang 50% Emas + 50% Saham": { color: "#f43f5e", width: 1.8 },
+  };
 
   // ---------- RBAC: executor → EmptyState ----------
   if (isExecutor) {
@@ -417,6 +464,132 @@ function ReportsPerformancePanel() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          </div>
+        )}
+      </SectionCard>
+
+      {/* ================= Perbandingan benchmark (v1.5.0) ================= */}
+      <SectionCard
+        title="Perbandingan Benchmark"
+        description="Indeks 100 = awal periode — portofolio vs strategi pasif"
+      >
+        {benchPending ? (
+          <Skeleton className="h-[260px] w-full rounded-lg" aria-label="Memuat grafik benchmark" />
+        ) : benchError ? (
+          benchError.status === 403 ? null : (
+            <ErrorBox
+              message={benchError.message || "Benchmark belum terjangkau"}
+              onRetry={() => void benchmarkQuery.refetch()}
+            />
+          )
+        ) : !showBench ? (
+          <EmptyState
+            icon={<Scale className="h-6 w-6" />}
+            title="Belum ada data benchmark"
+            description="Seri benchmark terbentuk dari riwayat harga pasar & snapshot portofolio."
+          />
+        ) : (
+          <div className="space-y-4">
+            {/* Ringkasan head-to-head */}
+            <div className="flex flex-wrap gap-2">
+              <Badge
+                variant="outline"
+                className={cn(
+                  "gap-1.5 border-emerald-500/30 bg-emerald-500/10 tabular-nums",
+                  "text-emerald-700 dark:text-emerald-400",
+                )}
+              >
+                <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+                Portofolio {formatPct(benchSummary?.portfolioPct ?? 0)}
+              </Badge>
+              {benchSummary?.best && (
+                <Badge
+                  variant="outline"
+                  className="gap-1.5 border-amber-500/30 bg-amber-500/10 tabular-nums text-amber-700 dark:text-amber-400"
+                >
+                  <Trophy className="h-3.5 w-3.5" aria-hidden="true" />
+                  Terbaik: {benchSummary.best.label} {formatPct(benchSummary.best.pct)}
+                </Badge>
+              )}
+              {benchSummary && (
+                <Badge
+                  variant="outline"
+                  className="gap-1.5 tabular-nums text-muted-foreground"
+                >
+                  <Scale className="h-3.5 w-3.5" aria-hidden="true" />
+                  Menang vs Seimbang {benchSummary.winningMonths}/{benchSummary.totalMonths} bulan
+                </Badge>
+              )}
+            </div>
+            <div
+              className="h-[280px] w-full"
+              role="img"
+              aria-label="Grafik perbandingan portofolio dengan benchmark"
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={benchData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="rgba(113,113,122,0.18)"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "#71717a", fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                    minTickGap={16}
+                  />
+                  <YAxis
+                    tickFormatter={(v: number) => `${v.toFixed(0)}`}
+                    tick={{ fill: "#71717a", fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={44}
+                    domain={["auto", "auto"]}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--popover)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 12,
+                      fontSize: 12,
+                      color: "var(--popover-foreground)",
+                    }}
+                    labelStyle={{ color: "var(--muted-foreground)", marginBottom: 4 }}
+                    itemStyle={{ color: "var(--popover-foreground)" }}
+                    formatter={(value, name) => [`${Number(value).toFixed(2)}`, String(name)]}
+                  />
+                  <Legend
+                    wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
+                    iconType="plainline"
+                  />
+                  <ReferenceLine
+                    y={100}
+                    strokeDasharray="4 4"
+                    stroke="rgba(113,113,122,0.45)"
+                  />
+                  {benchData.length > 0 &&
+                    Object.keys(benchData[0])
+                      .filter((k) => k !== "label")
+                      .map((label) => {
+                        const st = BENCH_STYLES[label] ?? { color: "#71717a", width: 1.8 };
+                        return (
+                          <Line
+                            key={label}
+                            type="monotone"
+                            dataKey={label}
+                            stroke={st.color}
+                            strokeWidth={st.width}
+                            dot={false}
+                            activeDot={{ r: 3 }}
+                            connectNulls
+                          />
+                        );
+                      })}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         )}
       </SectionCard>
@@ -894,7 +1067,7 @@ export default function PortfolioView() {
               <Button
                 type="button"
                 size="sm"
-                className="min-h-[40px] w-full bg-emerald-600 text-white hover:bg-emerald-700 sm:w-auto"
+                className="min-h-[40px] w-full bg-emerald-600 text-primary-foreground hover:bg-emerald-700 sm:w-auto"
                 onClick={runStressTest}
                 disabled={stressMutation.isPending}
               >

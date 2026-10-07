@@ -264,7 +264,7 @@ function NoteFormDialog({
             Batal
           </Button>
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             disabled={!form.title.trim() || saveM.isPending}
             onClick={() => saveM.mutate()}
           >
@@ -385,7 +385,7 @@ export default function ResearchView() {
             {canEdit && (
               <Button
                 size="sm"
-                className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+                className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                 onClick={openCreate}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -424,7 +424,7 @@ export default function ResearchView() {
                 canEdit && (notesQ.data ?? []).length === 0 ? (
                   <Button
                     size="sm"
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                     onClick={openCreate}
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
@@ -569,7 +569,7 @@ export default function ResearchView() {
                     Hapus
                   </ConfirmButton>
                   <Button
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                     onClick={() => openEdit(detail)}
                   >
                     <Pencil className="h-4 w-4" aria-hidden="true" />

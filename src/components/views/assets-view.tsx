@@ -437,7 +437,7 @@ function AssetFormDialog({
                       className={cn(
                         "px-2.5 py-1 text-xs font-semibold transition-colors",
                         currency === c
-                          ? "bg-emerald-600 text-white"
+                          ? "bg-emerald-600 text-primary-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-muted",
                       )}
                     >
@@ -516,7 +516,7 @@ function AssetFormDialog({
             </Button>
             <Button
               type="submit"
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               disabled={saveMutation.isPending}
             >
               {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
@@ -975,7 +975,7 @@ export default function AssetsView() {
             <Button
               type="button"
               onClick={openAdd}
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
               Tambah Aset
@@ -1019,7 +1019,7 @@ export default function AssetsView() {
                   <Button
                     type="button"
                     onClick={openAdd}
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
                     Tambah Aset
@@ -1111,7 +1111,7 @@ export default function AssetsView() {
                           <ConfirmButton
                             variant="ghost"
                             size="sm"
-                            className="h-8 px-2 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400"
+                            className="h-8 px-2 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300"
                             title="Hapus aset (klik 2x untuk konfirmasi)"
                             confirmLabel="Yakin?"
                             onConfirm={() => deleteMutation.mutate(a.id)}

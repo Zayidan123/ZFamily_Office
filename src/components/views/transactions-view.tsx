@@ -463,7 +463,7 @@ function TxFormDialog({
             </Button>
             <Button
               type="submit"
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               disabled={createMutation.isPending || assets.length === 0}
             >
               {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
@@ -649,7 +649,7 @@ export default function TransactionsView() {
               <Button
                 type="button"
                 onClick={() => setFormOpen(true)}
-                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 Catat Transaksi
@@ -694,7 +694,7 @@ export default function TransactionsView() {
                   <Button
                     type="button"
                     onClick={() => setFormOpen(true)}
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
                     Catat Transaksi

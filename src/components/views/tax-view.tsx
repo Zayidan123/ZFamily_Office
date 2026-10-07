@@ -227,7 +227,7 @@ function AddObligationDialog({
               placeholder="mis. PPh Final Properti"
               aria-invalid={Boolean(errors.name)}
             />
-            {errors.name && <p className="text-xs text-rose-600">{errors.name}</p>}
+            {errors.name && <p className="text-xs text-rose-600 dark:text-rose-400">{errors.name}</p>}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -267,7 +267,7 @@ function AddObligationDialog({
                 onChange={(e) => setDueDate(e.target.value)}
                 aria-invalid={Boolean(errors.dueDate)}
               />
-              {errors.dueDate && <p className="text-xs text-rose-600">{errors.dueDate}</p>}
+              {errors.dueDate && <p className="text-xs text-rose-600 dark:text-rose-400">{errors.dueDate}</p>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="tax-amount">Estimasi jumlah (USD)</Label>
@@ -301,7 +301,7 @@ function AddObligationDialog({
           </Button>
           <Button
             type="button"
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             disabled={pending}
             onClick={submit}
           >
@@ -446,7 +446,7 @@ export default function TaxView() {
             <Button
               type="button"
               size="sm"
-              className="min-h-[40px] bg-emerald-600 text-white hover:bg-emerald-700"
+              className="min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               onClick={() => setAddOpen(true)}
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
@@ -565,7 +565,7 @@ export default function TaxView() {
                 <Button
                   type="button"
                   size="sm"
-                  className="bg-emerald-600 text-white hover:bg-emerald-700"
+                  className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                   onClick={() => setAddOpen(true)}
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />
@@ -643,7 +643,7 @@ export default function TaxView() {
                       variant="ghost"
                       confirmLabel="?"
                       title={`Hapus ${o.name}`}
-                      className="h-9 w-9 text-muted-foreground hover:text-rose-600"
+                      className="h-9 w-9 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
                       onConfirm={() => deleteMutation.mutate(o.id)}
                       disabled={deleteMutation.isPending}
                     >

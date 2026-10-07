@@ -6,6 +6,8 @@
 // GET /market/alerts (30s, lazy-eval) + POST /market/alerts + dismiss/delete
 // Konverter mata uang via pivot USD (useRates: USDIDR + prices[].usd)
 // Sparkline mini (SVG) + dialog detail (AreaChart 7/30/90 hari)
+// Quick Trade (V-b): tombol "Perdagangkan" per kartu → dialog order paper
+//   POST /trading/paper/orders (owner) · GET /trading/paper/account (konteks)
 // RBAC: owner CRUD (watchlist & alert), lainnya read-only, executor tanpa alert
 // ============================================================
 import * as React from "react";
@@ -13,7 +15,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAppStore } from "@/lib/store";
-import { formatDate, formatIdr, formatPct, formatUsd, timeAgo } from "@/lib/format";
+import { formatDate, formatIdr, formatNumber, formatPct, formatUsd, timeAgo } from "@/lib/format";
+import type { PaperAccount } from "@/lib/types";
 import {
   StatCard,
   PageHeader,
@@ -69,6 +72,7 @@ import {
   StickyNote,
   Bell,
   ArrowLeftRight,
+  Zap,
 } from "lucide-react";
 
 // ------------------------------------------------------------
@@ -205,12 +209,17 @@ function useMarketHistory(symbol: string, days: number, enabled = true) {
 function WatchCard({
   item,
   isOwner,
+  canTrade,
+  onTrade,
   onOpen,
   onDelete,
   deleting,
 }: {
   item: WatchlistItem;
   isOwner: boolean;
+  /** V-b: tombol "Perdagangkan" — hanya owner (POST paper/orders 403 utk role lain) */
+  canTrade: boolean;
+  onTrade: () => void;
   onOpen: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -298,6 +307,27 @@ function WatchCard({
           <Sparkline values={values} up={up} />
         )}
       </div>
+
+      {/* V-b — aksi cepat paper trading (tidak memicu dialog detail) */}
+      {canTrade && (
+        <div className="mt-3 flex items-center justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="min-h-[36px] gap-1.5 border-emerald-500/40 bg-emerald-500/5 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300"
+            title="Perdagangan cepat — beli/jual di akun paper sandbox"
+            aria-label={`Perdagangkan ${item.symbol} di akun paper`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTrade();
+            }}
+          >
+            <Zap className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" />
+            Perdagangkan
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -485,6 +515,341 @@ function WatchDetailDialog({
             <p className="text-xs text-muted-foreground/70">
               Untuk mengubah catatan, hapus simbol lalu tambahkan ulang dengan catatan baru.
             </p>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ------------------------------------------------------------
+// Quick Trade (V-b) — dialog order paper trading cepat per simbol
+// POST /trading/paper/orders (owner-only) · konteks GET /trading/paper/account
+// Validasi inline sebelum submit: qty > 0, sell ≤ posisi, buy ≤ kas + ε
+// ------------------------------------------------------------
+function QuickTradeDialog({
+  item,
+  open,
+  onOpenChange,
+}: {
+  item: WatchlistItem | null;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const formatCurrency = useFormatCurrency();
+  const symbol = item?.symbol ?? "";
+  const price = typeof item?.price.usd === "number" ? item.price.usd : null;
+
+  const [side, setSide] = React.useState<"buy" | "sell">("buy");
+  const [qtyRaw, setQtyRaw] = React.useState("");
+
+  // Reset setiap kali dialog dibuka / simbol berganti
+  React.useEffect(() => {
+    if (open) {
+      setSide("buy");
+      setQtyRaw("");
+    }
+  }, [open, symbol]);
+
+  // Konteks akun paper — fetch HANYA saat dialog terbuka
+  const accountQ = useQuery<PaperAccount, ApiError>({
+    queryKey: ["paper", "account"],
+    queryFn: () => apiFetch<PaperAccount>("/trading/paper/account"),
+    enabled: open,
+    staleTime: 15_000,
+  });
+  const cash = accountQ.data?.cashUsd ?? null;
+  const heldQty =
+    accountQ.data && symbol
+      ? (accountQ.data.positions.find((p) => p.symbol === symbol)?.qty ?? 0)
+      : null;
+
+  // Chip nominal USD → qty = nominal / harga live (skala per magnitude simbol)
+  const chipUsd: number[] =
+    price == null
+      ? []
+      : price >= 5000
+        ? [100, 500, 1000, 5000]
+        : price >= 500
+          ? [50, 100, 500, 1000]
+          : price >= 10
+            ? [10, 50, 100, 500]
+            : [5, 10, 50, 100];
+  const chipDecimals = price != null && price >= 1000 ? 6 : 4;
+  const chipLabel = (usd: number) => (usd >= 1000 ? `$${usd / 1000}k` : `$${usd}`);
+
+  const applyChip = (usd: number) => {
+    if (price == null || price <= 0) return;
+    setQtyRaw(String(Number((usd / price).toFixed(chipDecimals))));
+  };
+
+  const qtyNum = Number(qtyRaw.replace(",", "."));
+  const qtyTyped = qtyRaw.trim() !== "";
+  const qtyValid = qtyTyped && Number.isFinite(qtyNum) && qtyNum > 0;
+  const estUsd = qtyValid && price != null ? qtyNum * price : null;
+
+  // Validasi inline — tampil sebelum submit (merah)
+  let inlineError: string | null = null;
+  if (qtyTyped && !(Number.isFinite(qtyNum) && qtyNum > 0)) {
+    inlineError = "Jumlah (qty) harus angka lebih besar dari 0.";
+  } else if (
+    qtyValid &&
+    side === "sell" &&
+    heldQty !== null &&
+    qtyNum > heldQty + 1e-9
+  ) {
+    inlineError = `Posisi tidak cukup — Anda memegang ${formatNumber(heldQty, 8)} ${symbol} di akun paper.`;
+  } else if (
+    qtyValid &&
+    side === "buy" &&
+    cash !== null &&
+    estUsd !== null &&
+    estUsd > cash + 0.01
+  ) {
+    inlineError = `Kas tidak cukup — tersedia ${formatCurrency(cash)} di akun paper.`;
+  }
+  const canSubmit = qtyValid && inlineError === null && price != null && symbol !== "";
+
+  const orderM = useMutation({
+    mutationFn: (b: { symbol: string; side: "buy" | "sell"; qty: number }) =>
+      apiFetch<PaperAccount>("/trading/paper/orders", { method: "POST", body: b }),
+    onSuccess: (_acc, vars) => {
+      toast.success(
+        `Order ${vars.side === "buy" ? "Beli" : "Jual"} ${formatNumber(vars.qty, 8)} ${vars.symbol} terisi @ ${formatUsd(price ?? 0)}`,
+        { description: "Fill harga live di akun paper trading sandbox." },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["paper"] });
+      void queryClient.invalidateQueries({ queryKey: ["market"] });
+      onOpenChange(false);
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.status === 423) {
+        toast.error("Panic mode aktif — trading dinonaktifkan");
+      } else {
+        toast.error("Order ditolak", {
+          description:
+            err instanceof ApiError
+              ? err.message
+              : "Backend belum terjangkau — mencoba lagi",
+        });
+      }
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md">
+        {item && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex flex-wrap items-center gap-2 text-xl">
+                Perdagangan Cepat — {item.symbol}
+              </DialogTitle>
+              <DialogDescription className="flex flex-wrap items-center gap-2">
+                <span>
+                  Harga live{" "}
+                  <CurrencyText
+                    usd={item.price.usd}
+                    className="font-semibold text-foreground"
+                  />
+                </span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "tabular-nums",
+                    item.price.change24hPct >= 0
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                      : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400",
+                  )}
+                >
+                  {formatPct(item.price.change24hPct)} 24j
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                >
+                  <Zap className="h-3 w-3" aria-hidden="true" />
+                  Paper sandbox
+                </Badge>
+              </DialogDescription>
+            </DialogHeader>
+
+            {/* ---------- Konteks akun paper ---------- */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg border bg-muted/30 px-3 py-2.5">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Kas tersedia
+                </p>
+                {accountQ.isPending && !accountQ.data ? (
+                  <Skeleton className="mt-1.5 h-6 w-24 rounded-md" />
+                ) : (
+                  <p className="mt-0.5 text-lg font-semibold tabular-nums leading-tight">
+                    {cash === null ? "—" : formatCurrency(cash)}
+                  </p>
+                )}
+              </div>
+              <div className="rounded-lg border bg-muted/30 px-3 py-2.5">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Posisi {item.symbol}
+                </p>
+                {accountQ.isPending && !accountQ.data ? (
+                  <Skeleton className="mt-1.5 h-6 w-16 rounded-md" />
+                ) : (
+                  <p className="mt-0.5 text-lg font-semibold tabular-nums leading-tight">
+                    {heldQty === null ? "—" : formatNumber(heldQty, 8)}
+                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                      {item.symbol}
+                    </span>
+                  </p>
+                )}
+              </div>
+            </div>
+            {accountQ.isError && (
+              <p className="text-xs text-rose-600 dark:text-rose-400">
+                Gagal memuat konteks akun paper —{" "}
+                {accountQ.error instanceof ApiError
+                  ? accountQ.error.message
+                  : "coba lagi"}
+              </p>
+            )}
+
+            {/* ---------- Toggle Beli / Jual ---------- */}
+            <div
+              className="grid grid-cols-2 gap-2"
+              role="group"
+              aria-label="Arah order"
+            >
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={side === "buy"}
+                onClick={() => setSide("buy")}
+                className={cn(
+                  "min-h-[44px] font-semibold",
+                  side === "buy"
+                    ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:text-white"
+                    : "text-emerald-700 hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300",
+                )}
+              >
+                <TrendingUp className="h-4 w-4" aria-hidden="true" />
+                Beli
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={side === "sell"}
+                onClick={() => setSide("sell")}
+                className={cn(
+                  "min-h-[44px] font-semibold",
+                  side === "sell"
+                    ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-700 hover:text-white"
+                    : "text-rose-700 hover:border-rose-500/60 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300",
+                )}
+              >
+                <TrendingDown className="h-4 w-4" aria-hidden="true" />
+                Jual
+              </Button>
+            </div>
+
+            {/* ---------- Qty + chip nominal cepat ---------- */}
+            <div className="space-y-2">
+              <Label htmlFor="qt-qty">
+                Jumlah (qty {item.symbol})
+              </Label>
+              <Input
+                id="qt-qty"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="any"
+                value={qtyRaw}
+                onChange={(e) => setQtyRaw(e.target.value)}
+                placeholder="mis. 0,01"
+                aria-invalid={inlineError ? true : undefined}
+                aria-describedby={inlineError ? "qt-qty-error" : undefined}
+              />
+              {chipUsd.length > 0 && (
+                <div
+                  className="flex flex-wrap gap-1.5"
+                  role="group"
+                  aria-label="Nominal cepat"
+                >
+                  {chipUsd.map((usd) => (
+                    <Button
+                      key={usd}
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="min-h-[32px] rounded-full px-3 text-xs tabular-nums"
+                      onClick={() => applyChip(usd)}
+                    >
+                      {chipLabel(usd)}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {inlineError && (
+                <p
+                  id="qt-qty-error"
+                  role="alert"
+                  className="text-xs font-medium text-rose-600 dark:text-rose-400"
+                >
+                  {inlineError}
+                </p>
+              )}
+            </div>
+
+            {/* ---------- Estimasi nilai live ---------- */}
+            <div
+              className="rounded-lg border bg-muted/30 px-4 py-3"
+              role="status"
+              aria-label="Estimasi nilai order"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Estimasi Nilai
+                </p>
+                <p className="text-xl font-bold tabular-nums leading-tight">
+                  {estUsd !== null ? formatCurrency(estUsd) : "—"}
+                </p>
+              </div>
+              <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                {estUsd !== null && price != null
+                  ? `${formatNumber(qtyNum, 8)} × ${formatCurrency(price)}`
+                  : "Masukkan jumlah untuk melihat estimasi."}
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+              >
+                Batal
+              </Button>
+              <Button
+                type="button"
+                disabled={!canSubmit || orderM.isPending}
+                className={cn(
+                  "min-h-[40px]",
+                  side === "buy"
+                    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                    : "bg-rose-600 text-white hover:bg-rose-700",
+                )}
+                onClick={() =>
+                  orderM.mutate({ symbol: item.symbol, side, qty: qtyNum })
+                }
+              >
+                {orderM.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Zap className="h-4 w-4" aria-hidden="true" />
+                )}
+                {side === "buy" ? "Beli" : "Jual"} {item.symbol}
+              </Button>
+            </DialogFooter>
           </>
         )}
       </DialogContent>
@@ -1261,6 +1626,16 @@ export default function MarketView() {
   const [addOpen, setAddOpen] = React.useState(false);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<WatchlistItem | null>(null);
+  // V-b — quick trade
+  const [tradeOpen, setTradeOpen] = React.useState(false);
+  const [tradeItem, setTradeItem] = React.useState<WatchlistItem | null>(null);
+
+  // POST /trading/paper/orders = owner-only (RBAC backend) — executor/advisor/
+  // beneficiary dapat 403 → tombol Perdagangkan disembunyikan untuk role lain.
+  const canTradeOrders = user?.role === "owner";
+  /** USD/IDR adalah kurs FX (bukan simbol tradable) — tanpa tombol trade. */
+  const isTradableSymbol = (item: WatchlistItem) =>
+    item.symbol.toUpperCase() !== "USDIDR" && typeof item.price?.usd === "number";
 
   // ---------- Queries ----------
   const watchlistQuery = useQuery<WatchlistItem[], ApiError>({
@@ -1453,6 +1828,11 @@ export default function MarketView() {
               key={item.id}
               item={item}
               isOwner={isOwner}
+              canTrade={canTradeOrders && isTradableSymbol(item)}
+              onTrade={() => {
+                setTradeItem(item);
+                setTradeOpen(true);
+              }}
               onOpen={() => {
                 setSelected(item);
                 setDetailOpen(true);
@@ -1472,6 +1852,13 @@ export default function MarketView() {
         item={selected}
         open={detailOpen}
         onOpenChange={setDetailOpen}
+      />
+
+      {/* V-b — Quick Trade paper trading (owner) */}
+      <QuickTradeDialog
+        item={tradeItem}
+        open={tradeOpen}
+        onOpenChange={setTradeOpen}
       />
 
       <AddWatchDialog

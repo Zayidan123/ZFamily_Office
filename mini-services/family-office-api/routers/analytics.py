@@ -36,6 +36,33 @@ FITUR 2 — Laporan kinerja bulanan:
   - summary.totalChangeUsd = penjumlahan changeUsd antar-bulan;
     totalChangePct = totalChangeUsd / startUsd bulan pertama * 100.
 
+FITUR 3 — Benchmark perbandingan (Task V-a):
+  GET /reports/benchmark?months=12   (clamp 3..24, read-only, tanpa panic guard)
+  - 4 seri dgn baseline 100 = AWAL window (bukan close bulan pertama):
+      portfolio : endUsd bulan / startUsd bulan pertama * 100 (carry-over U-a) —
+                  titik terakhir = totalChangePct + 100 (konsisten /reports/monthly).
+      btc_hold  : close bulanan BTC / close hari terakhir SEBELUM bulan pertama.
+      gold_hold : idem XAU.
+      balanced  : rebalancing bulanan 50% return emas + 50% rata-rata sama-berat
+                  return bulanan simbol equity di engine (NVDA, BBCA, BBRI, TLKM;
+                  yang tak dikenal engine dilewati dari rata-rata).
+  - Close bulanan = titik harian TERAKHIR tiap bulan dari histori deterministik
+    market.history_points(sym, days=800 tetap) — seed hanya bergantung simbol,
+    jadi kunci bulan yang sama menghasilkan close yang sama utk semua panjang
+    window (sifat sufiks). Harga live berubah tiap 30 dtk & tanggal bergeser ->
+    nilai histori absolut ikut bergeser per hari (artefak engine harga sandbox,
+    perilaku sama dengan /market/history).
+  - Seri market dialign ke kunci bulan portofolio yang SAMA (bulan tanpa
+    snapshot dilewati, mewarisi keputusan U-a — dgn seed 18 bulan, window
+    3..18 penuh; 19..24 menyusut ke 19 bulan berisi snapshot).
+  - summary.portfolioPct = totalChangePct laporan bulanan; best = seri dgn
+    (nilai terakhir - 100) tertinggi TERMASUK portofolio (tie -> seri pertama
+    urut evaluasi: portfolio, btc_hold, gold_hold, balanced);
+    winningMonths = bulan dgn return bulanan portofolio > return bulanan
+    balanced (head-to-head vs benchmark seimbang, bukan sekadar > 0), dihitung
+    dari nilai series terpublikasi (bulat 2 desimal; bulan pertama dibanding
+    baseline 100).
+
 RBAC read (semua endpoint): owner/advisor/beneficiary — executor 403.
 Semua endpoint read-only; POST read/read-all (di trading.py) yang
 panic-guarded. CSV export tetap menulis audit log (pola export.py).
@@ -49,6 +76,9 @@ from fastapi.responses import Response
 
 from db import get_conn, query, query_one, r2, write_audit
 from errors import ApiError, ok
+# PENTING: cross-import antar router WAJIB pakai prefix paket `routers.` —
+# entry app adalah main.py (sys.path root = folder service), bukan folder routers.
+from routers.market import history_points
 from prices import get_price_map, price_asset
 from security import require_auth
 
@@ -58,6 +88,18 @@ READ_ROLES = ("owner", "beneficiary", "advisor")   # executor -> 403
 IN_TYPES = ("buy", "transfer_in", "income")
 OUT_TYPES = ("sell", "transfer_out", "expense")
 MONTHS_MIN, MONTHS_MAX = 3, 24
+
+# Benchmark (V-a): simbol pembanding + panjang histori tetap.
+BTC_SYMBOL = "BTC"
+GOLD_SYMBOL = "XAU"
+EQUITY_SYMBOLS = ("NVDA", "BBCA", "BBRI", "TLKM")   # proxy saham sama-berat
+BENCH_HISTORY_DAYS = 800   # > 24 bulan (max 731 hari) + buffer bulan baseline
+SERIES_META = (   # urutan evaluasi "best"; label UI bahasa Indonesia
+    ("portfolio", "Portofolio Keluarga"),
+    ("btc_hold", "BTC Buy & Hold"),
+    ("gold_hold", "Emas (XAU) Buy & Hold"),
+    ("balanced", "Seimbang 50% Emas + 50% Saham"),
+)
 
 _QTY_EPS = 1e-9
 
@@ -303,5 +345,182 @@ def report_monthly_csv(months: int = Query(12), user: dict = Depends(require_aut
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------- benchmark V-a
+
+def _baseline_close(points: list, cutoff: str):
+    """Close harian TERAKHIR sebelum tanggal cutoff (YYYY-MM-01) = awal window.
+
+    None bila histori tidak menjangkau (fallback pemanggil: close bulan
+    pertama simbol — tidak pernah terjadi dgn BENCH_HISTORY_DAYS=800).
+    """
+    baseline = None
+    for p in points:
+        if p["date"] < cutoff:
+            baseline = p["price"]
+        else:
+            break   # points urut waktu naik
+    return baseline
+
+
+def _monthly_closes(points: list, key_set: set) -> dict:
+    """{ym: close} — titik harian TERAKHIR tiap bulan window (last wins)."""
+    closes = {}
+    for p in points:
+        ym = p["date"][:7]
+        if ym in key_set:
+            closes[ym] = p["price"]
+    return closes
+
+
+def _indexed_values(sym: str, keys: list, key_set: set) -> dict:
+    """Nilai terindeks (baseline=100 di awal window) per bulan utk satu simbol."""
+    points = history_points(sym, BENCH_HISTORY_DAYS)
+    closes = _monthly_closes(points, key_set)
+    base = _baseline_close(points, f"{keys[0]}-01")
+    if base is None:
+        base = closes.get(keys[0])   # fallback: anchor bulan pertama simbol
+    if not base:
+        return {}
+    return {k: closes[k] / base * 100.0 for k in keys if k in closes}
+
+
+def _monthly_rets_by_month(values: dict, keys: list) -> dict:
+    """{ym: return bulanan} dari nilai terindeks (bulan pertama vs baseline 100)."""
+    rets = {}
+    prev = 100.0
+    for k in keys:
+        if k not in values or not prev:
+            continue
+        rets[k] = values[k] / prev - 1.0
+        prev = values[k]
+    return rets
+
+
+def _rets_from_points(points: list) -> dict:
+    """{ym: return bulanan} dari points terpublikasi (baseline 100 implisit)."""
+    rets = {}
+    prev = 100.0
+    for p in points:
+        if not prev:
+            break
+        rets[p["month"]] = p["value"] / prev - 1.0
+        prev = p["value"]
+    return rets
+
+
+@router.get("/reports/benchmark")
+def report_benchmark(months: int = Query(12), user: dict = Depends(require_auth(*READ_ROLES))):
+    """Perbandingan kinerja portofolio vs BTC/XAU buy & hold + portofolio seimbang.
+
+    Lihat docstring modul (FITUR 3). Read-only, tanpa panic guard, tanpa audit
+    (konsisten GET /reports/monthly).
+    """
+    conn = get_conn()
+    try:
+        months = _clamp_months(months)
+        report = _monthly_report(conn, months)
+        rows = report["months"]
+        keys = [m["month"] for m in rows]
+        key_set = set(keys)
+
+        # Seri portofolio: indeks 100 = startUsd bulan pertama (carry-over U-a).
+        portfolio_pts = []
+        if rows:
+            first_start = rows[0]["startUsd"]
+            if first_start:
+                portfolio_pts = [
+                    {"month": m["month"], "value": r2(m["endUsd"] / first_start * 100.0)}
+                    for m in rows
+                ]
+
+        # Tanpa snapshot sama sekali -> seri kosong berbentuk konsisten.
+        if not keys or not portfolio_pts:
+            return ok({
+                "months": months,
+                "series": [
+                    {"key": k, "label": lbl, "points": []} for k, lbl in SERIES_META
+                ],
+                "summary": {"portfolioPct": 0.0, "best": None,
+                            "winningMonths": 0, "totalMonths": 0},
+            })
+
+        # BTC & XAU buy & hold (simbol inti engine — selalu ada di BASE_PRICES).
+        btc_idx = _indexed_values(BTC_SYMBOL, keys, key_set)
+        gold_idx = _indexed_values(GOLD_SYMBOL, keys, key_set)
+
+        # Balanced: rebalancing bulanan 50% emas + 50% rata-rata sama-berat
+        # return bulanan simbol equity yang tersedia di engine.
+        gold_rets = _monthly_rets_by_month(gold_idx, keys)
+        eq_rets_per_sym = []
+        for sym in EQUITY_SYMBOLS:
+            try:
+                idx = _indexed_values(sym, keys, key_set)
+            except ApiError:
+                continue   # simbol tak dikenal engine -> keluar dari rata-rata
+            if idx:
+                eq_rets_per_sym.append(_monthly_rets_by_month(idx, keys))
+        eq_rets = {}
+        for k in keys:
+            legs = [r[k] for r in eq_rets_per_sym if k in r]
+            if legs:
+                eq_rets[k] = sum(legs) / len(legs)
+
+        balanced_pts = []
+        v = 100.0
+        for k in keys:
+            legs = []
+            if k in gold_rets:
+                legs.append(0.5 * gold_rets[k])
+            if k in eq_rets:
+                legs.append(0.5 * eq_rets[k])
+            if not legs:
+                break   # kedua kaki hilang -> seri berhenti (tak diharapkan terjadi)
+            v *= (1.0 + sum(legs))
+            balanced_pts.append({"month": k, "value": r2(v)})
+
+        meta = dict(SERIES_META)
+        series = [
+            {"key": "portfolio", "label": meta["portfolio"], "points": portfolio_pts},
+            {"key": "btc_hold", "label": meta["btc_hold"],
+             "points": [{"month": k, "value": r2(btc_idx[k])} for k in keys if k in btc_idx]},
+            {"key": "gold_hold", "label": meta["gold_hold"],
+             "points": [{"month": k, "value": r2(gold_idx[k])} for k in keys if k in gold_idx]},
+            {"key": "balanced", "label": meta["balanced"], "points": balanced_pts},
+        ]
+
+        # best: (nilai terakhir - 100) tertinggi di SEMUA seri, termasuk portofolio.
+        best = None
+        best_raw = None
+        for s in series:
+            if not s["points"]:
+                continue
+            pct = s["points"][-1]["value"] - 100.0
+            if best_raw is None or pct > best_raw:
+                best_raw = pct
+                best = {"key": s["key"], "label": s["label"], "pct": r2(pct)}
+
+        # winningMonths: return bulanan portofolio > return bulanan balanced
+        # (head-to-head vs benchmark seimbang), dari nilai terpublikasi.
+        port_rets = _rets_from_points(portfolio_pts)
+        bal_rets = _rets_from_points(balanced_pts)
+        winning = sum(
+            1 for k in keys
+            if k in port_rets and k in bal_rets and port_rets[k] > bal_rets[k]
+        )
+
+        return ok({
+            "months": months,
+            "series": series,
+            "summary": {
+                "portfolioPct": report["summary"]["totalChangePct"],
+                "best": best,
+                "winningMonths": winning,
+                "totalMonths": len(keys),
+            },
+        })
     finally:
         conn.close()

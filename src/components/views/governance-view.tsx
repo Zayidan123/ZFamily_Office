@@ -198,7 +198,7 @@ function EntitiesTab() {
         {isOwner && (
           <Button
             size="sm"
-            className="min-h-[36px] bg-emerald-600 text-white hover:bg-emerald-700"
+            className="min-h-[36px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
             onClick={() => setOpen(true)}
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
@@ -238,7 +238,7 @@ function EntitiesTab() {
             isOwner ? (
               <Button
                 size="sm"
-                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                 onClick={() => setOpen(true)}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -344,7 +344,7 @@ function EntitiesTab() {
               Batal
             </Button>
             <Button
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               disabled={!form.name.trim() || createM.isPending}
               onClick={() => createM.mutate()}
             >
@@ -697,7 +697,7 @@ function ApprovalsTab() {
               Batal
             </Button>
             <Button
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               disabled={!form.title.trim() || form.amountUsd === "" || createM.isPending}
               onClick={() => createM.mutate()}
             >

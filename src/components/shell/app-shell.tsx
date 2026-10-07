@@ -16,6 +16,7 @@ import { VIEW_COMPONENTS } from "@/components/views/registry";
 import { Monogram, RoleBadge } from "@/components/shared/kit";
 import PriceTicker from "@/components/shared/price-ticker";
 import LoginView from "@/components/auth/login-view";
+import CommandPalette from "@/components/command-palette";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +32,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Menu, LogOut, AlertOctagon } from "lucide-react";
+import { Menu, LogOut, AlertOctagon, Search } from "lucide-react";
 
 // ------------------------------------------------------------
 // Splash (menghindari hydration mismatch saat store rehydrate)
@@ -183,6 +184,7 @@ export default function AppShell() {
 
   const [mounted, setMounted] = React.useState(false);
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
 
   // Polling status sistem (30s) — panicMode + jam server
@@ -266,6 +268,22 @@ export default function AppShell() {
             </div>
 
             <div className="ml-auto flex items-center gap-2 sm:gap-3">
+              {/* Command palette (Cmd+K) */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-2 px-2.5 text-muted-foreground sm:pr-2"
+                aria-label="Buka command palette (Ctrl+K)"
+                aria-keyshortcuts="Meta+K Control+K"
+                onClick={() => setPaletteOpen(true)}
+              >
+                <Search className="h-4 w-4" aria-hidden="true" />
+                <kbd className="hidden rounded border bg-muted px-1.5 font-mono text-[10px] font-semibold text-muted-foreground sm:inline-block">
+                  ⌘K
+                </kbd>
+              </Button>
+
               {/* Toggle currency */}
               <Select
                 value={displayCurrency}
@@ -297,8 +315,11 @@ export default function AppShell() {
           {/* Price ticker — strip marquee harga live di bawah topbar */}
           <PriceTicker />
 
-          {/* Konten view */}
-          <main className="flex-1 overflow-y-auto p-6 scrollbar-thin lg:p-8">
+          {/* Konten view — tabIndex agar bisa difokus dari command palette */}
+          <main
+            tabIndex={-1}
+            className="flex-1 overflow-y-auto p-6 scrollbar-thin outline-none lg:p-8"
+          >
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeView}
@@ -325,6 +346,9 @@ export default function AppShell() {
           </footer>
         </div>
       </div>
+
+      {/* Command palette global (⌘K) */}
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
     </div>
   );
 }

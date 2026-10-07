@@ -341,6 +341,32 @@ export interface MonthlyReport {
   summary: MonthlyReportSummary;
 }
 
+// ---------- Perbandingan benchmark (v1.5.0 — Task V-a/V-final) ----------
+/** Titik seri terindeks: 100 = awal periode. */
+export interface BenchmarkPoint {
+  month: string;
+  value: number;
+}
+
+export interface BenchmarkSeries {
+  key: "portfolio" | "btc_hold" | "gold_hold" | "balanced" | string;
+  label: string;
+  points: BenchmarkPoint[];
+}
+
+export interface BenchmarkSummary {
+  portfolioPct: number;
+  best: { key: string; label: string; pct: number };
+  winningMonths: number;
+  totalMonths: number;
+}
+
+export interface BenchmarkReport {
+  months: number;
+  series: BenchmarkSeries[];
+  summary: BenchmarkSummary;
+}
+
 // ---------- Notifikasi: status dibaca (v1.4.0 — Task U-a/U-b) ----------
 /** AlertItem + status dibaca (opsional agar backward-compatible dengan shape lama). */
 export interface AlertItemWithRead extends AlertItem {
@@ -392,4 +418,38 @@ export interface DashboardSummary {
 export interface HistoryPoint {
   date: string;
   valueUsd: number;
+}
+
+// ============================================================
+// Paper Trading (kontrak backend v1.4 — /trading/paper/*)
+// Dipakai Quick Trade (Pasar) + Paper Trading panel (Trading).
+// ============================================================
+
+/** Posisi paper trading — turunan dari replay paper_trades di backend */
+export interface PaperPosition {
+  symbol: string;
+  qty: number;
+  avgPriceUsd: number;
+  currentPriceUsd: number;
+  valueUsd: number;
+  unrealizedPnlUsd: number;
+}
+
+/** GET /trading/paper/account — juga response dari POST /orders & /reset */
+export interface PaperAccount {
+  cashUsd: number;
+  realizedPnlUsd: number;
+  equityUsd: number;
+  positions: PaperPosition[];
+}
+
+/** GET /trading/paper/trades — satu trade virtual */
+export interface PaperTrade {
+  id: string | number;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  priceUsd: number;
+  realizedPnlUsd: number | null;
+  at: string;
 }

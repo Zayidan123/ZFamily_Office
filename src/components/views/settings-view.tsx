@@ -561,7 +561,7 @@ export default function SettingsView() {
               )}
               {isOwner && (
                 <Button
-                  className="ml-auto min-h-[40px] bg-emerald-600 text-white hover:bg-emerald-700"
+                  className="ml-auto min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
                   disabled={!totalOk || putM.isPending}
                   onClick={saveTargets}
                 >
@@ -756,7 +756,7 @@ export default function SettingsView() {
                 type="button"
                 className={cn(
                   focusRing,
-                  "min-h-[40px] bg-emerald-600 text-white hover:bg-emerald-700",
+                  "min-h-[40px] bg-emerald-600 text-primary-foreground hover:bg-emerald-700",
                 )}
                 onClick={openSetup}
                 disabled={mfaSetupM.isPending}
@@ -797,7 +797,7 @@ export default function SettingsView() {
           </div>
           {isOwner && (
             <Button
-              className="min-h-[40px] shrink-0 bg-emerald-600 text-white hover:bg-emerald-700"
+              className="min-h-[40px] shrink-0 bg-emerald-600 text-primary-foreground hover:bg-emerald-700"
               onClick={() => exportM.mutate()}
               disabled={exportM.isPending}
             >
@@ -964,7 +964,7 @@ export default function SettingsView() {
             </Button>
             <Button
               type="button"
-              className={cn(focusRing, "bg-emerald-600 text-white hover:bg-emerald-700")}
+              className={cn(focusRing, "bg-emerald-600 text-primary-foreground hover:bg-emerald-700")}
               disabled={mfaSetupM.isPending || !setupData || setupCode.length !== 6 || mfaEnableM.isPending}
               onClick={() => mfaEnableM.mutate(setupCode)}
             >
